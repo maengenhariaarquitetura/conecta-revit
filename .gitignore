@@ -1,0 +1,21 @@
+# Visual Studio
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.sln.docstates
+.vscode/
+
+# Node.js
+node_modules/
+dist/
+
+# Build outputs
+*.mcpb
+*.exe
+installer/Output/
+dist/
+
+# Logs
+*.log

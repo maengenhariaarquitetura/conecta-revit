@@ -1,0 +1,7 @@
+{
+  "name": "marcenaria",
+  "version": "0.1.0",
+  "description": "Especialização para projetos de marcenaria no Revit",
+  "revitTemplate": null,
+  "families": []
+}

@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <AssemblyName>ConectaRevit.Addin</AssemblyName>
+    <RootNamespace>ConectaRevit.Addin</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!--
+      Aponta para o diretório de instalação do Revit.
+      Sobrescreva via: dotnet build /p:RevitApiDir="C:\...\Revit 2025"
+    -->
+    <RevitApiDir Condition="'$(RevitApiDir)' == ''">C:\Program Files\Autodesk\Revit 2026</RevitApiDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- CopyLocal=false: as DLLs já existem no diretório do Revit — não embalar junto. -->
+    <Reference Include="RevitAPI">
+      <HintPath>$(RevitApiDir)\RevitAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>$(RevitApiDir)\RevitAPIUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Motor Roslyn — única dependência pesada do add-in (ARCHITECTURE § 5.5). -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ConectaRevit.Core\ConectaRevit.Core.csproj" />
+  </ItemGroup>
+
+</Project>

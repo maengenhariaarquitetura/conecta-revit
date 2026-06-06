@@ -1,0 +1,10 @@
+{
+  "name": "conecta-revit",
+  "version": "0.1.0",
+  "description": "Liga o Claude Desktop ao Autodesk Revit — execute qualquer operação da API do Revit direto do chat",
+  "command": {
+    "type": "stdio",
+    "command": "node",
+    "args": ["dist/index.js"]
+  }
+}

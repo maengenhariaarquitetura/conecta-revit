@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <AssemblyName>ConectaRevit.Core</AssemblyName>
+    <RootNamespace>ConectaRevit.Core</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!--
+    Sem referências a RevitAPI nem RevitAPIUI — intencionalmente.
+    Regra: tudo que não toca Autodesk.Revit.* vai aqui.
+    Isso mantém o Core testável sem precisar abrir o Revit (ARCHITECTURE § nota Fase 1).
+    A dependência é unidirecional: ConectaRevit.Addin → ConectaRevit.Core (nunca o contrário).
+  -->
+
+</Project>
