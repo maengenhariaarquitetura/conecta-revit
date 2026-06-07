@@ -328,14 +328,20 @@ internal sealed class ExecutionEngine : IExternalEventHandler
 
     private ExecuteCodeResult RunScript(UIApplication app, ExecuteCodeParams p, CancellationToken ct)
     {
-        var effectiveMode = p.Mode?.ToLowerInvariant() switch
+        // Modo efetivo: parâmetro explícito tem precedência; ausente → padrão do settings.
+        // "safe"   → harness gerencia Transaction + IFailuresPreprocessor.
+        // "direct" → script gerencia as próprias transações.
+        var explicitMode = p.Mode?.ToLowerInvariant();
+        var effectiveMode = explicitMode switch
         {
             "safe"   => "safe",
-            "direct" => "safe",   // TODO Fase 3D
+            "direct" => "direct",
             _        => Application.Settings?.Mode ?? "safe"
         };
 
-        AddinLog.Info($"RunScript: modo efetivo = '{effectiveMode}'.");
+        var source = explicitMode != null ? "parâmetro explícito" : "settings padrão";
+        AddinLog.Info($"RunScript: modo efetivo = '{effectiveMode}' (via {source}).");
+
         var logLines = new List<string>();
 
         return effectiveMode == "direct"
