@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Events;
 using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Events;
 using ConectaRevit.Addin.Logging;
 using ConectaRevit.Shared;
 using Microsoft.CodeAnalysis;
@@ -151,10 +152,32 @@ internal sealed class ExecutionEngine : IExternalEventHandler
                 return;
             }
 
+            // ── Timeout no lado do add-in (60 s) ────────────────────────────
+            // Execute() bloqueia a Thread 1 enquanto o Roslyn compila/executa.
+            // Se um diálogo não suprimido ou script em loop prender a thread mais
+            // de 60 s, este callback (ThreadPool) resolve o TCS com TimeoutException,
+            // desbloqueando o lado WS sem esperar para sempre.
+            //
+            // INVARIANTE: TCS aceita apenas a primeira chamada bem-sucedida.
+            // Se o job terminar normalmente antes do timeout, TrySetResult vence.
+            // Se o timeout disparar primeiro, TrySetResult retorna false (no-op).
+            // Não há corrupção de estado em nenhum dos casos.
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(job.Ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(60));
+            timeoutCts.Token.Register(() =>
+            {
+                if (job.Tcs.Task.IsCompleted) return;
+                AddinLog.Error(
+                    $"Execute(): TIMEOUT 60s — job {job.JobId}. " +
+                    "TCS resolvido com TimeoutException via background callback.");
+                job.Tcs.TrySetException(
+                    new TimeoutException($"A execução excedeu 60s no add-in (job {job.JobId})."));
+            });
+
             // DispatchJob isola TODOS os tipos Roslyn.
             // Se o JIT de DispatchJob falhar (TypeLoadException por DLL Roslyn incompatível),
             // a exceção é capturada pelo catch(Exception) abaixo e o TCS é resolvido.
-            DispatchJob(app, job);
+            DispatchJob(app, job, timeoutCts.Token);
         }
         catch (Exception ex)
         {
@@ -198,7 +221,7 @@ internal sealed class ExecutionEngine : IExternalEventHandler
     //
     // NÃO mova tipos Roslyn de volta para Execute(). Não adicione tipos Roslyn
     // no catch/finally de Execute(). Mantenha esta fronteira.
-    private void DispatchJob(UIApplication app, ExecuteJob job)
+    private void DispatchJob(UIApplication app, ExecuteJob job, CancellationToken ct)
     {
         AddinLog.Info($"DispatchJob(): job {job.JobId} — JIT de DispatchJob OK (Roslyn DLLs acessíveis).");
 
@@ -213,7 +236,7 @@ internal sealed class ExecutionEngine : IExternalEventHandler
         }
 
         AddinLog.Info($"DispatchJob(): job {job.JobId} — chamando RunScript.");
-        var result = RunScript(app, job.Params);
+        var result = RunScript(app, job.Params, ct);
 
         AddinLog.Info($"DispatchJob(): job {job.JobId} — RunScript OK. Resolvendo TCS com sucesso.");
         job.Tcs.TrySetResult(result);
@@ -263,7 +286,7 @@ internal sealed class ExecutionEngine : IExternalEventHandler
 
     // ── Despacho de modo ──────────────────────────────────────────────────────
 
-    private ExecuteCodeResult RunScript(UIApplication app, ExecuteCodeParams p)
+    private ExecuteCodeResult RunScript(UIApplication app, ExecuteCodeParams p, CancellationToken ct)
     {
         var effectiveMode = p.Mode?.ToLowerInvariant() switch
         {
@@ -276,13 +299,13 @@ internal sealed class ExecutionEngine : IExternalEventHandler
         var logLines = new List<string>();
 
         return effectiveMode == "direct"
-            ? RunDirect(app, p.Code, logLines)
-            : RunSafe(app, p.Code, logLines);
+            ? RunDirect(app, p.Code, logLines, ct)
+            : RunSafe(app, p.Code, logLines, ct);
     }
 
     // ── Modo Seguro ───────────────────────────────────────────────────────────
 
-    private ExecuteCodeResult RunSafe(UIApplication app, string code, List<string> logLines)
+    private ExecuteCodeResult RunSafe(UIApplication app, string code, List<string> logLines, CancellationToken ct)
     {
         var uiDoc = app.ActiveUIDocument ?? throw new NoDocumentException();
         var doc   = uiDoc.Document       ?? throw new NoDocumentException();
@@ -299,41 +322,59 @@ internal sealed class ExecutionEngine : IExternalEventHandler
             Log   = msg => { logLines.Add(msg); AddinLog.Info($"[ScriptLog] {msg}"); },
         };
 
-        var txName = "ConectaRevit: " + SummarizeCode(code);
+        var txName      = "ConectaRevit: " + SummarizeCode(code);
+        var preprocessor = new HarnessFailuresPreprocessor(logLines);
 
         // ── Fase 3B: rastreamento de elementos via DocumentChanged ────────────
-        //
-        // MECANISMO ESCOLHIDO: Application.DocumentChanged
-        //   • Dispara na Thread 1 DURANTE tx.Commit() — síncrono, mesmo frame de execução.
-        //   • Fornece exatamente GetAddedElementIds() / GetModifiedElementIds() /
-        //     GetDeletedElementIds() para os elementos afetados NESTE commit.
-        //   • Em rollback, o evento NÃO dispara → listas permanecem vazias. ✓
-        //   • Alternativa (snapshot pré/pós) foi descartada: percorreria o FilteredElement-
-        //     Collector duas vezes e perderia elementos deletados.
-        //
-        // GARANTIA DE DESINCRIÇÃO: a chamada "-= OnDocumentChanged" fica no finally
-        // externo → executa em qualquer caminho (sucesso, erro de compilação, rollback).
+        // Dispara na Thread 1 DENTRO de tx.Commit() — síncrono.
+        // Em rollback, o evento NÃO dispara → listas permanecem vazias. ✓
         var createdIds  = new List<long>();
         var modifiedIds = new List<long>();
         var deletedIds  = new List<long>();
 
         void OnDocumentChanged(object? sender, DocumentChangedEventArgs e)
         {
-            // Filtra por documento — múltiplos documentos podem estar abertos.
             if (!e.GetDocument().Equals(doc)) return;
             foreach (var id in e.GetAddedElementIds())    createdIds.Add(id.Value);
             foreach (var id in e.GetModifiedElementIds()) modifiedIds.Add(id.Value);
             foreach (var id in e.GetDeletedElementIds())  deletedIds.Add(id.Value);
         }
 
-        AddinLog.Info("RunSafe: inscrevendo Application.DocumentChanged (rastreamento Fase 3B).");
+        // ── Supressão de diálogos modais ──────────────────────────────────────
+        // A Thread 1 roda síncrona durante Execute(). Qualquer diálogo que tente
+        // aparecer trava a thread indefinidamente. Este handler cancela/fecha
+        // qualquer caixa de diálogo automaticamente e loga no resultado.
+        // OverrideResult(2) = IDCANCEL (Win32) = TaskDialogResult.Cancel (Revit).
+        void OnDialogBoxShowing(object? sender, DialogBoxShowingEventArgs e)
+        {
+            var info = e is TaskDialogShowingEventArgs td
+                ? $"TaskDialog id='{td.DialogId}'"
+                : e.GetType().Name;
+            var logMsg = $"[Diálogo suprimido pelo harness] {info}";
+            logLines.Add(logMsg);
+            AddinLog.Warn($"DialogBoxShowing durante job: suprimindo {info}.");
+            e.OverrideResult(2); // IDCANCEL / TaskDialogResult.Cancel
+        }
+
+        AddinLog.Info("RunSafe: inscrevendo DocumentChanged + DialogBoxShowing.");
         app.Application.DocumentChanged += OnDocumentChanged;
+        app.DialogBoxShowing            += OnDialogBoxShowing;
 
         try
         {
             using var tx = new Transaction(doc, txName);
 
-            AddinLog.Info($"RunSafe: iniciando Transaction '{txName}'.");
+            // FailureHandlingOptions ANTES de tx.Start():
+            //   • SetFailuresPreprocessor  → warnings/errors tratados sem diálogo.
+            //   • SetForcedModalHandling(false) → nenhum modal forçado pelo Revit.
+            //   • SetClearAfterRollback(true) → falhas limpas após rollback.
+            var failOpts = tx.GetFailureHandlingOptions()
+                .SetFailuresPreprocessor(preprocessor)
+                .SetForcedModalHandling(false)
+                .SetClearAfterRollback(true);
+            tx.SetFailureHandlingOptions(failOpts);
+
+            AddinLog.Info($"RunSafe: iniciando Transaction '{txName}' (FailuresPreprocessor configurado).");
             try { tx.Start(); }
             catch (Exception ex)
             {
@@ -350,6 +391,9 @@ internal sealed class ExecutionEngine : IExternalEventHandler
                 // .GetAwaiter().GetResult() bloqueia a Thread 1 brevemente enquanto o Roslyn
                 // compila/executa. Não causa deadlock: HandleExecuteCodeAsync (lado WS) aguarda
                 // o TCS em thread de background (ThreadPool) — Thread 1 está livre para bloquear.
+                //
+                // ct = token linkado ao timeout de 60s do Execute().
+                // Se cancelado, RunAsync lança OperationCanceledException → rollback + rethrow.
                 AddinLog.Info(
                     $"RunSafe: iniciando execução Roslyn. " +
                     $"Thread={Environment.CurrentManagedThreadId} (deve ser Thread 1).");
@@ -358,7 +402,7 @@ internal sealed class ExecutionEngine : IExternalEventHandler
                 try
                 {
                     state = CSharpScript
-                        .RunAsync<object>(code, _scriptOptions, globals, typeof(ScriptGlobals))
+                        .RunAsync<object>(code, _scriptOptions, globals, typeof(ScriptGlobals), ct)
                         .GetAwaiter()
                         .GetResult();
                 }
@@ -387,10 +431,17 @@ internal sealed class ExecutionEngine : IExternalEventHandler
                     $"Thread={Environment.CurrentManagedThreadId} (deve ser Thread 1). " +
                     $"Fazendo commit da Transaction.");
 
-                // DocumentChanged dispara aqui, ainda na Thread 1, dentro de Commit().
+                // DocumentChanged dispara aqui, na Thread 1, dentro de Commit().
+                // HarnessFailuresPreprocessor corre durante Commit() se houver falhas.
                 var status = tx.Commit();
                 if (status != TransactionStatus.Committed)
-                    throw new TransactionFailedException($"Commit retornou status: {status}");
+                {
+                    // Commit falhou (provavelmente preprocessor fez ProceedWithRollBack).
+                    // Inclui o último erro Revit coletado pelo preprocessor, se houver.
+                    var revitErr = logLines.LastOrDefault(l => l.StartsWith("[Revit Error"))
+                                   ?? $"status={status}";
+                    throw new TransactionFailedException(revitErr);
+                }
 
                 LastTransactionName = txName;
                 AddinLog.Info(
@@ -419,16 +470,48 @@ internal sealed class ExecutionEngine : IExternalEventHandler
         {
             // Sempre desincreve — sucesso, rollback, CompilationError, ou qualquer exceção.
             app.Application.DocumentChanged -= OnDocumentChanged;
-            AddinLog.Info("RunSafe: desinscrevendo Application.DocumentChanged.");
+            app.DialogBoxShowing            -= OnDialogBoxShowing;
+            AddinLog.Info("RunSafe: desinscrevendo DocumentChanged + DialogBoxShowing.");
         }
     }
 
     // ── Modo Direto (stub — Fase 3D) ─────────────────────────────────────────
 
-    private ExecuteCodeResult RunDirect(UIApplication app, string code, List<string> logLines)
+    private ExecuteCodeResult RunDirect(UIApplication app, string code, List<string> logLines, CancellationToken ct)
     {
-        // TODO Fase 3D: executar sem Transaction do harness.
-        return RunSafe(app, code, logLines);
+        // Supressão de diálogos modais — obrigatória em QUALQUER modo de execução.
+        // O Modo Direto roda síncrono na Thread 1 (mesmo que o Seguro); sem esta
+        // proteção, qualquer caixa de diálogo travaria a thread indefinidamente.
+        //
+        // NOTA DE IMPLEMENTAÇÃO (Fase 3D):
+        //   Quando RunDirect receber sua implementação real (sem chamar RunSafe),
+        //   este bloco já cobre o caminho correto. Enquanto o stub delega para RunSafe,
+        //   o handler fica registrado duas vezes — inofensivo: o segundo OverrideResult(2)
+        //   numa caixa já cancelada é no-op pelo Revit.
+        void OnDialogBoxShowing(object? sender, DialogBoxShowingEventArgs e)
+        {
+            var info = e is TaskDialogShowingEventArgs td
+                ? $"TaskDialog id='{td.DialogId}'"
+                : e.GetType().Name;
+            var logMsg = $"[Diálogo suprimido pelo harness] {info}";
+            logLines.Add(logMsg);
+            AddinLog.Warn($"RunDirect — DialogBoxShowing durante job: suprimindo {info}.");
+            e.OverrideResult(2); // IDCANCEL / TaskDialogResult.Cancel
+        }
+
+        AddinLog.Info("RunDirect: inscrevendo DialogBoxShowing.");
+        app.DialogBoxShowing += OnDialogBoxShowing;
+        try
+        {
+            // TODO Fase 3D: executar sem Transaction do harness.
+            // Por enquanto delega para RunSafe (que tem sua própria supressão de diálogo).
+            return RunSafe(app, code, logLines, ct);
+        }
+        finally
+        {
+            app.DialogBoxShowing -= OnDialogBoxShowing;
+            AddinLog.Info("RunDirect: desinscrevendo DialogBoxShowing.");
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -34,9 +34,20 @@ export function registerTools(
           "- **safe** (padrão): o harness abre e commita automaticamente uma Transaction em volta do código. " +
             "O script NÃO deve abrir Transaction própria — escreva as modificações diretamente " +
             "(ex.: `Wall.Create(doc, ...)`). Abrir Transaction dentro do script em Modo Seguro " +
-            "causa erro de transação aninhada.\n" +
-          "- **direct**: o script gerencia suas próprias transações com " +
-            "`using (var tx = new Transaction(Doc, \"nome\")) { tx.Start(); ...; tx.Commit(); }`.\n\n" +
+            "causa erro de transação aninhada. " +
+            "O harness já suprime warnings e erros do Revit automaticamente (IFailuresPreprocessor).\n" +
+          "- **direct**: o script gerencia suas próprias transações. " +
+            "OBRIGATÓRIO configurar `SetForcedModalHandling(false)` em cada Transaction para evitar " +
+            "que warnings e erros do Revit abram caixas de diálogo modais e travem a execução:\n" +
+            "```\n" +
+            "using var tx = new Transaction(Doc, \"nome\");\n" +
+            "var opts = tx.GetFailureHandlingOptions().SetForcedModalHandling(false);\n" +
+            "tx.SetFailureHandlingOptions(opts);\n" +
+            "tx.Start();\n" +
+            "// ... modificações ...\n" +
+            "tx.Commit();\n" +
+            "```\n" +
+            "Sem essa configuração, um simples warning de paredes sobrepostas pode travar o Revit.\n\n" +
 
           "## Globais disponíveis (sempre injetados)\n" +
           "- `Doc` — `Autodesk.Revit.DB.Document` ativo\n" +

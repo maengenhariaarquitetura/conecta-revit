@@ -407,6 +407,14 @@ internal sealed class WebSocketServer
             await SendErrorAsync(ws, id, "BUSY",
                 "Fila cheia (>10 requisições pendentes). Aguarde.", null, ct);
         }
+        // ── Timeout no add-in (60 s) — TCS resolvido pelo background callback ──
+        catch (TimeoutException ex)
+        {
+            AddinLog.Error($"HandleExecuteCodeAsync: id='{id}' — TIMEOUT no add-in: {ex.Message}");
+            await SendErrorAsync(ws, id, "TIMEOUT",
+                "A execução excedeu 60s no add-in. O script pode estar em loop ou travado.",
+                null, ct);
+        }
         // ── Runtime error (exceção lançada pelo script do usuário) ──────────
         catch (Exception ex)
         {
