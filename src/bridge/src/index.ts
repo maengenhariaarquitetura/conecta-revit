@@ -2,6 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { RevitClient } from "./revit-client";
 import { registerTools } from "./mcp/index";
+import { loadSkills } from "./skills/index";
 import { log } from "./log";
 
 /**
@@ -127,8 +128,11 @@ async function main(): Promise<void> {
     { capabilities: { tools: {} } }
   );
 
+  // loadSkills() é síncrono e rápido (leitura de arquivos locais).
+  const skills = loadSkills();
+
   // getClient é assíncrono: tenta conectar na hora se não estiver conectado.
-  registerTools(server, ensureConnected);
+  registerTools(server, ensureConnected, skills);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

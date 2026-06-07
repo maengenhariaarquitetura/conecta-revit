@@ -4,23 +4,22 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { RevitClient } from "../revit-client";
+import { type LoadedSkill } from "../skills/index";
 import { log } from "../log";
 
 /**
  * Registra as tools MCP no servidor.
- * Fase 2: apenas revit_execute_code (PROTOCOL.md § 7 — hello-world mínimo).
- * Outras 4 tools: TODO Fase 3.
  *
  * @param getClient  Função assíncrona que retorna o cliente ativo ou null.
- *                   É chamada a cada invocação de tool (lazy connect):
- *                   se não houver cliente, tenta conectar naquele instante
- *                   e só retorna null se a tentativa realmente falhar.
+ * @param skills     Skills carregadas pelo loadSkills() — expostas via
+ *                   revit_list_skills e revit_load_skill.
  *
  * NUNCA use console.log aqui — stdout é exclusivo do protocolo JSON-RPC.
  */
 export function registerTools(
   server: Server,
-  getClient: () => Promise<RevitClient | null>
+  getClient: () => Promise<RevitClient | null>,
+  skills: LoadedSkill[]
 ): void {
   // ── Lista de tools disponíveis ──────────────────────────────────────────
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -131,7 +130,38 @@ export function registerTools(
           required: [],
         },
       },
-      // TODO Fase 3D: revit_run_tool, revit_list_tools
+      {
+        name: "revit_list_skills",
+        description:
+          "Lista pacotes de conhecimento especializado (skills) disponíveis " +
+          "para tarefas específicas no Revit, ex.: marcenaria, elétrica. " +
+          "Retorna o nome e a descrição de cada skill carregada. " +
+          "Chame esta tool antes de revit_load_skill para descobrir qual skill é relevante.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+          required: [],
+        },
+      },
+      {
+        name: "revit_load_skill",
+        description:
+          "Carrega o conhecimento especializado de uma skill antes de executar " +
+          "uma tarefa daquele domínio. SEMPRE que o usuário pedir algo de um domínio " +
+          "específico (ex.: marcenaria, móveis, armários), chame revit_list_skills para " +
+          "ver se há skill relevante e use revit_load_skill ANTES de gerar código, para " +
+          "seguir as regras corretas do domínio.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            name: {
+              type: "string",
+              description: "Nome da skill a carregar (conforme listado por revit_list_skills).",
+            },
+          },
+          required: ["name"],
+        },
+      },
     ],
   }));
 
@@ -292,6 +322,47 @@ export function registerTools(
           isError: true,
         };
       }
+    }
+
+    if (name === "revit_list_skills") {
+      log.info("revit_list_skills chamada.");
+      if (skills.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "Nenhuma skill disponível." }],
+        };
+      }
+      const lines = skills.map(
+        (s) => `• ${s.name} (v${s.version}, fonte: ${s.source}): ${s.description}`
+      );
+      return {
+        content: [{ type: "text" as const, text: lines.join("\n") }],
+      };
+    }
+
+    if (name === "revit_load_skill") {
+      const skillName = args?.["name"];
+      if (typeof skillName !== "string" || !skillName.trim()) {
+        return {
+          content: [{ type: "text" as const, text: "Erro: o argumento 'name' é obrigatório." }],
+          isError: true,
+        };
+      }
+      log.info(`revit_load_skill chamada: '${skillName}'.`);
+      const skill = skills.find((s) => s.name === skillName.trim());
+      if (!skill) {
+        const available = skills.map((s) => s.name).join(", ") || "(nenhuma)";
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Skill '${skillName}' não encontrada. Skills disponíveis: ${available}`,
+          }],
+          isError: true,
+        };
+      }
+      log.info(`revit_load_skill: '${skill.name}' v${skill.version} carregada.`);
+      return {
+        content: [{ type: "text" as const, text: skill.instructions }],
+      };
     }
 
     return {
