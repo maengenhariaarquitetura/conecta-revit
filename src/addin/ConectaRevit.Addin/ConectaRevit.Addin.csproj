@@ -12,6 +12,15 @@
     -->
     <RevitApiDir Condition="'$(RevitApiDir)' == ''">C:\Program Files\Autodesk\Revit 2026</RevitApiDir>
     <OutputType>Library</OutputType>
+    <!--
+      Para OutputType=Library o .NET SDK defaulta CopyLocalLockFileAssemblies=false,
+      o que faz os NuGet packages (Roslyn e dependências transitivas) NÃO serem copiados
+      para bin/. O Revit add-in precisa que essas DLLs estejam na pasta de saída para
+      carregá-las em runtime.
+      As DLLs do Revit (RevitAPI/RevitAPIUI) continuam excluídas via Private=false nas
+      suas <Reference> — essa flag tem precedência e não é afetada por esta propriedade.
+    -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <ItemGroup>
@@ -27,8 +36,54 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Motor Roslyn — única dependência pesada do add-in (ARCHITECTURE § 5.5). -->
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.*" />
+    <!--
+      Motor Roslyn — única dependência pesada do add-in (ARCHITECTURE § 5.5).
+
+      VERSÃO FIXADA EM 4.8.0 — NÃO ATUALIZE sem rever a compatibilidade com o Revit.
+
+      CAUSA: Roslyn 4.9.0+ requer System.Collections.Immutable >= 9.0.0 e
+      System.Reflection.Metadata >= 9.0.0. O Revit 2026 hospeda o add-in no
+      runtime .NET 8 (NETCore.App 8.0.x), que fornece apenas as versões 8.0.0
+      desses assemblies via shared framework. Tentar carregar a versão 9.0.0 lança
+      FileLoadException porque o CLR já tem 8.0.0 carregado e não permite
+      carregar outra major version no mesmo ALC (Default ALC do processo Revit).
+
+      Roslyn 4.8.0 foi lançado em novembro 2023 junto com .NET 8 e declara:
+        System.Collections.Immutable >= 8.0.0  ←  satisfeito pelo .NET 8 shared framework
+        System.Reflection.Metadata   >= 8.0.0  ←  idem
+      Nenhum conflito de versão. Nenhum FileLoadException.
+
+      QUANDO ATUALIZAR:
+        • Revit migrar para .NET 9 (NETCore.App 9.0.x) → pode usar Roslyn 4.9.x
+        • Ou implementar a Opção A abaixo.
+
+      OPÇÃO A (futura) — AssemblyLoadContext (ALC) dedicado para o Roslyn:
+        Criar ConectaRevit.Addin.RoslynRunner.dll separado. Esse projeto referencia
+        Roslyn 4.x mais recente. No startup, criar RoslynAssemblyLoadContext que:
+          - carrega Microsoft.CodeAnalysis.* e System.Collections.Immutable 9.x
+            a partir da pasta do add-in (isolado do shared framework 8.x)
+          - retorna null (fallback ao Default ALC) para RevitAPI, BCL, ConectaRevit.*
+        Instanciar RoslynRunnerImpl (definida no RoslynRunner.dll) via interface
+        IRoslynRunner (definida no add-in principal). Comunicação via interface
+        com tipos-folha (string, object, Assembly[]) evita problemas de identidade
+        de tipo entre ALCs. Permite usar Roslyn 4.14+ independente do .NET host.
+        Complexidade estimada: +1 projeto, +200 linhas. Prioridade: Fase 3D ou posterior.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.8.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      System.Collections.Immutable e System.Reflection.Metadata são fornecidos pelo
+      .NET 8 shared framework (versão 8.0.0). Com Roslyn 4.8.0 requerendo >= 8.0.0,
+      não precisamos de cópias locais — ExcludeAssets=runtime previne que o NuGet
+      copie versões desnecessárias para bin/, eliminando o risco de conflito.
+      Compile-time assets (compile;build) ainda são usados normalmente pelo SDK.
+    -->
+    <PackageReference Include="System.Collections.Immutable" Version="8.0.0"
+                      ExcludeAssets="runtime" />
+    <PackageReference Include="System.Reflection.Metadata" Version="8.0.0"
+                      ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>

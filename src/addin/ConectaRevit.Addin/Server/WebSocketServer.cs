@@ -4,7 +4,9 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Autodesk.Revit.UI;
 using ConectaRevit.Addin.Execution;
+using ConectaRevit.Addin.Logging;
 using ConectaRevit.Addin.Settings;
 using ConectaRevit.Shared;
 
@@ -29,10 +31,10 @@ internal sealed class WebSocketServer
 
     // ─── Estado ──────────────────────────────────────────────────────────────
 
-    private HttpListener?         _listener;
-    private CancellationTokenSource? _cts;
-    private volatile WebSocket?   _currentWs;   // cliente ativo (um por vez, Fase 2)
-    private readonly SemaphoreSlim _sendLock = new(1, 1); // serializa ws.SendAsync
+    private HttpListener?             _listener;
+    private CancellationTokenSource?  _cts;
+    private volatile WebSocket?       _currentWs;   // cliente ativo (um por vez)
+    private readonly SemaphoreSlim    _sendLock = new(1, 1);
     private int _port;
 
     public bool IsRunning { get; private set; }
@@ -56,15 +58,12 @@ internal sealed class WebSocketServer
 
     // ─── Start / Stop ────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Liga o servidor. HttpListener.Start() é síncrono; o loop de accept sobe em background.
-    /// Lança exceção se nenhuma porta disponível — o ConnectCommand captura e exibe TaskDialog.
-    /// </summary>
     public void Start()
     {
         if (IsRunning) return;
 
-        // Descoberta de porta: 8765 → 8775 (ARCHITECTURE § 5.2).
+        AddinLog.Info("WebSocketServer.Start(): iniciando servidor WebSocket.");
+
         HttpListener? listener = null;
         int foundPort = -1;
 
@@ -79,10 +78,7 @@ internal sealed class WebSocketServer
                 foundPort = port;
                 break;
             }
-            catch
-            {
-                candidate.Close();
-            }
+            catch { candidate.Close(); }
         }
 
         if (listener == null)
@@ -95,25 +91,50 @@ internal sealed class WebSocketServer
         _cts      = new CancellationTokenSource();
         IsRunning = true;
 
+        AddinLog.Info(
+            $"WebSocketServer.Start(): escutando na porta {foundPort}. " +
+            $"Thread atual={Environment.CurrentManagedThreadId} " +
+            $"(thread principal — AcceptLoop será movido para ThreadPool).");
         WriteRuntimeJson();
 
-        // Loop de accept em background — não bloqueia a thread principal do Revit.
-        _ = AcceptLoopAsync(_cts.Token).ContinueWith(t =>
+        // ── CORREÇÃO DE DEADLOCK ─────────────────────────────────────────────
+        //
+        // Problema original: AcceptLoopAsync era iniciado diretamente de Start(),
+        // que é chamado de ConnectCommand.Execute() — a thread principal do Revit
+        // (Thread 1). Sem Task.Run, todas as continuações async (HandleClientAsync,
+        // HandleMessageAsync, HandleExecuteCodeAsync) ficavam capturadas no
+        // SynchronizationContext da Thread 1.
+        //
+        // Quando HandleExecuteCodeAsync aguardava o TCS, a Thread 1 ficava
+        // "ocupada" com a continuação pendente. O IExternalEventHandler.Execute()
+        // só roda quando a Thread 1 está ociosa → deadlock.
+        //
+        // Solução: Task.Run() coloca AcceptLoopAsync em uma thread do ThreadPool,
+        // onde SynchronizationContext.Current == null. Todas as continuações
+        // subsequentes são despachadas para o ThreadPool, mantendo a Thread 1
+        // completamente livre para o Revit despachar ExternalEvents.
+        _ = Task.Run(async () =>
         {
-            if (t.IsFaulted)
-                Debug.WriteLine($"[ConectaRevit] AcceptLoop encerrou com erro: {t.Exception?.GetBaseException().Message}");
+            try
+            {
+                await AcceptLoopAsync(_cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { /* encerramento normal via Stop() */ }
+            catch (Exception ex)
+            {
+                var msg = ex.GetBaseException().Message;
+                Debug.WriteLine($"[ConectaRevit] AcceptLoop encerrou com erro: {msg}");
+                AddinLog.Error($"AcceptLoop encerrou com erro inesperado: {msg}");
+            }
         });
 
-        // Notifica a ponte (se já conectada) que o servidor subiu.
         _ = BroadcastStatusAsync(connected: true);
     }
 
-    /// <summary>Para o servidor e notifica o cliente conectado.</summary>
     public void Stop()
     {
         if (!IsRunning) return;
 
-        // Notifica o cliente antes de encerrar.
         _ = BroadcastStatusAsync(connected: false);
 
         _cts?.Cancel();
@@ -127,12 +148,19 @@ internal sealed class WebSocketServer
 
     private async Task AcceptLoopAsync(CancellationToken ct)
     {
+        // Deve rodar em thread do ThreadPool (Thread != 1).
+        // Se Thread == 1 aqui, o Task.Run em Start() não foi aplicado corretamente.
+        AddinLog.Info(
+            $"AcceptLoopAsync: iniciado. " +
+            $"Thread={Environment.CurrentManagedThreadId} (esperado: ThreadPool, NÃO Thread 1). " +
+            $"SC={System.Threading.SynchronizationContext.Current?.GetType().Name ?? "null (correto)"}.");
+
         while (!ct.IsCancellationRequested && _listener?.IsListening == true)
         {
             HttpListenerContext ctx;
             try
             {
-                ctx = await _listener.GetContextAsync().WaitAsync(ct);
+                ctx = await _listener.GetContextAsync().WaitAsync(ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { break; }
             catch (HttpListenerException)      { break; }
@@ -145,7 +173,6 @@ internal sealed class WebSocketServer
                 continue;
             }
 
-            // Apenas loopback (PROTOCOL.md § 1).
             if (!IPAddress.IsLoopback(ctx.Request.RemoteEndPoint.Address))
             {
                 ctx.Response.StatusCode = 403;
@@ -153,9 +180,10 @@ internal sealed class WebSocketServer
                 continue;
             }
 
-            // Fire-and-forget por cliente — um cliente por vez nesta fase.
             _ = HandleClientAsync(ctx, ct);
         }
+
+        AddinLog.Info("AcceptLoopAsync: encerrado.");
     }
 
     // ─── Sessão de um cliente ────────────────────────────────────────────────
@@ -163,11 +191,15 @@ internal sealed class WebSocketServer
     private async Task HandleClientAsync(HttpListenerContext ctx, CancellationToken ct)
     {
         WebSocketContext wsCtx;
-        try { wsCtx = await ctx.AcceptWebSocketAsync(null); }
+        try { wsCtx = await ctx.AcceptWebSocketAsync(null).ConfigureAwait(false); }
         catch { return; }
 
         var ws = wsCtx.WebSocket;
         _currentWs = ws;
+
+        AddinLog.Info(
+            $"HandleClientAsync: cliente WS conectado. " +
+            $"Thread={Environment.CurrentManagedThreadId}.");
 
         var buffer = new byte[64 * 1024];
 
@@ -175,15 +207,16 @@ internal sealed class WebSocketServer
         {
             while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
             {
-                // Lê mensagem completa (pode ser multi-frame).
                 using var ms = new MemoryStream();
                 WebSocketReceiveResult result;
                 do
                 {
-                    result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                    result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct)
+                                     .ConfigureAwait(false);
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", ct);
+                        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", ct)
+                                .ConfigureAwait(false);
                         return;
                     }
                     ms.Write(buffer, 0, result.Count);
@@ -191,20 +224,27 @@ internal sealed class WebSocketServer
 
                 var json = Encoding.UTF8.GetString(ms.ToArray());
 
-                // Fire-and-forget: ping não fica preso atrás de execute_code em fila.
                 _ = HandleMessageAsync(ws, json, ct).ContinueWith(t =>
                 {
                     if (t.IsFaulted)
-                        Debug.WriteLine($"[ConectaRevit] Erro ao processar mensagem: {t.Exception?.GetBaseException().Message}");
+                    {
+                        var msg = t.Exception?.GetBaseException().Message;
+                        Debug.WriteLine($"[ConectaRevit] Erro ao processar mensagem: {msg}");
+                        AddinLog.Error($"HandleClientAsync: erro no handler de mensagem: {msg}");
+                    }
                 });
             }
         }
         catch (OperationCanceledException) { }
-        catch (WebSocketException) { }
+        catch (WebSocketException ex)
+        {
+            AddinLog.Warn($"HandleClientAsync: WebSocketException (cliente desconectou?): {ex.Message}");
+        }
         finally
         {
             if (ReferenceEquals(_currentWs, ws))
                 _currentWs = null;
+            AddinLog.Info("HandleClientAsync: sessão encerrada.");
         }
     }
 
@@ -220,12 +260,17 @@ internal sealed class WebSocketServer
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            if (!root.TryGetProperty("id", out var idEl) ||
+            if (!root.TryGetProperty("id",     out var idEl)     ||
                 !root.TryGetProperty("method", out var methodEl))
-                return; // mensagem malformada — ignora
+                return;
 
             id     = idEl.GetString()     ?? "";
             method = methodEl.GetString() ?? "";
+
+            AddinLog.Info(
+                $"HandleMessageAsync: method='{method}' id='{id}' " +
+                $"Thread={Environment.CurrentManagedThreadId} " +
+                $"(esperado: ThreadPool, NÃO Thread 1).");
 
             JsonElement paramsEl = default;
             root.TryGetProperty("params", out paramsEl);
@@ -233,17 +278,18 @@ internal sealed class WebSocketServer
             switch (method)
             {
                 case "handshake":
-                    await HandleHandshakeAsync(ws, id, paramsEl, ct);
+                    await HandleHandshakeAsync(ws, id, paramsEl, ct).ConfigureAwait(false);
                     break;
                 case "ping":
-                    await HandlePingAsync(ws, id, ct);
+                    await HandlePingAsync(ws, id, ct).ConfigureAwait(false);
                     break;
                 case "execute_code":
-                    await HandleExecuteCodeAsync(ws, id, paramsEl, ct);
+                    await HandleExecuteCodeAsync(ws, id, paramsEl, ct).ConfigureAwait(false);
                     break;
                 default:
                     await SendErrorAsync(ws, id,
-                        "METHOD_NOT_FOUND", $"Método desconhecido: {method}", null, ct);
+                        "METHOD_NOT_FOUND", $"Método desconhecido: {method}", null, ct)
+                        .ConfigureAwait(false);
                     break;
             }
         }
@@ -255,8 +301,7 @@ internal sealed class WebSocketServer
 
     // ─── Handlers de cada método ─────────────────────────────────────────────
 
-    // handshake: valida MAJOR do protocolo, responde com info do add-in (PROTOCOL.md § 3.1).
-    // RevitVersion lida do cache em Application.RevitVersion — não exige chamada de API.
+    // handshake (PROTOCOL.md § 3.1)
     private async Task HandleHandshakeAsync(WebSocket ws, string id, JsonElement paramsEl, CancellationToken ct)
     {
         HandshakeParams? p;
@@ -281,29 +326,30 @@ internal sealed class WebSocketServer
             return;
         }
 
+        // Lê o documento ativo (pode ser null se nenhum projeto aberto).
+        var documentTitle = Application.UiApplication?.ActiveUIDocument?.Document?.Title;
+
         var result = new HandshakeResult(
             ProtocolVersion: Application.ProtocolVersion,
             AddinVersion:    Application.AddinVersion,
-            RevitVersion:    Application.RevitVersion,   // string em cache — seguro em bg thread
-            DocumentTitle:   null,                       // TODO Fase 3: ler UIDocument
+            RevitVersion:    Application.RevitVersion,
+            DocumentTitle:   documentTitle,
             Mode:            _settings.Mode
         );
 
         await SendSuccessAsync(ws, id, result, ct);
-
-        // Evento status logo após handshake (PROTOCOL.md § 4.2).
         await EmitEventAsync(ws, "status",
-            new StatusEventData(true, null, _settings.Mode), ct);
+            new StatusEventData(true, documentTitle, _settings.Mode), ct);
     }
 
-    // ping: keepalive da ponte a cada 30 s (PROTOCOL.md § 3.2).
+    // ping (PROTOCOL.md § 3.2)
     private async Task HandlePingAsync(WebSocket ws, string id, CancellationToken ct)
     {
         var result = new PingResult(true, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         await SendSuccessAsync(ws, id, result, ct);
     }
 
-    // execute_code: delega ao ExecutionEngine via ExternalEvent (PROTOCOL.md § 3.4).
+    // execute_code (PROTOCOL.md § 3.4)
     private async Task HandleExecuteCodeAsync(WebSocket ws, string id, JsonElement paramsEl, CancellationToken ct)
     {
         ExecuteCodeParams? p;
@@ -317,30 +363,57 @@ internal sealed class WebSocketServer
             return;
         }
 
+        AddinLog.Info($"HandleExecuteCodeAsync: id='{id}' — aguardando TCS do ExecutionEngine.");
+
         // Timeout de 120 s no lado do add-in (ARCHITECTURE § 5.2).
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(120));
 
         try
         {
-            var result = await _engine.EnqueueAsync(p, cts.Token);
-            await SendSuccessAsync(ws, id, result, ct);
+            var result = await _engine.EnqueueAsync(p, cts.Token).ConfigureAwait(false);
+            AddinLog.Info($"HandleExecuteCodeAsync: id='{id}' — TCS resolvido com sucesso. Enviando resposta.");
+            await SendSuccessAsync(ws, id, result, ct).ConfigureAwait(false);
         }
+        // ── Erros específicos do protocolo ──────────────────────────────────
+        catch (CompilationException ex)
+        {
+            AddinLog.Warn($"HandleExecuteCodeAsync: id='{id}' — COMPILATION_ERROR.");
+            await SendErrorAsync(ws, id, "COMPILATION_ERROR",
+                "O código C# não compilou. Verifique os diagnósticos.",
+                ex.Diagnostics, ct);
+        }
+        catch (NoDocumentException ex)
+        {
+            AddinLog.Warn($"HandleExecuteCodeAsync: id='{id}' — NO_DOCUMENT: {ex.Message}");
+            await SendErrorAsync(ws, id, "NO_DOCUMENT", ex.Message, null, ct);
+        }
+        catch (TransactionFailedException ex)
+        {
+            AddinLog.Error($"HandleExecuteCodeAsync: id='{id}' — TRANSACTION_FAILED: {ex.Details}");
+            await SendErrorAsync(ws, id, "TRANSACTION_FAILED",
+                "Falha na transação do harness.", ex.Details, ct);
+        }
+        // ── Controle de fluxo ───────────────────────────────────────────────
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            // Timeout do job (não cancelamento da sessão WS).
+            AddinLog.Warn($"HandleExecuteCodeAsync: id='{id}' — TIMEOUT após 120 s.");
             await SendErrorAsync(ws, id, "TIMEOUT",
                 "A execução excedeu o limite de 120 s.", null, ct);
         }
         catch (InvalidOperationException ex) when (ex.Message == "BUSY")
         {
+            AddinLog.Warn($"HandleExecuteCodeAsync: id='{id}' — BUSY.");
             await SendErrorAsync(ws, id, "BUSY",
                 "Fila cheia (>10 requisições pendentes). Aguarde.", null, ct);
         }
+        // ── Runtime error (exceção lançada pelo script do usuário) ──────────
         catch (Exception ex)
         {
+            AddinLog.Error($"HandleExecuteCodeAsync: id='{id}' — RUNTIME_ERROR: {ex.GetType().Name}: {ex.Message}");
+            var summary = FormatRuntimeError(ex);
             await SendErrorAsync(ws, id, "RUNTIME_ERROR",
-                "Erro inesperado na execução.", ex.Message, ct);
+                $"{ex.GetType().Name}: {ex.Message}", summary, ct);
         }
     }
 
@@ -349,14 +422,18 @@ internal sealed class WebSocketServer
     private async Task SendSuccessAsync<T>(WebSocket ws, string id, T result, CancellationToken ct)
     {
         var response = new SuccessResponse<T>(id, true, result);
-        await SendTextAsync(ws, JsonSerializer.Serialize(response, JsonOpts), ct);
+        var json = JsonSerializer.Serialize(response, JsonOpts);
+        AddinLog.Info($"SendSuccessAsync: id='{id}' — enviando {json.Length} bytes.");
+        await SendTextAsync(ws, json, ct);
     }
 
     private async Task SendErrorAsync(WebSocket ws, string id,
         string code, string message, string? details, CancellationToken ct)
     {
         var response = new ErrorResponse(id, false, new ErrorInfo(code, message, details));
-        await SendTextAsync(ws, JsonSerializer.Serialize(response, JsonOpts), ct);
+        var json = JsonSerializer.Serialize(response, JsonOpts);
+        AddinLog.Warn($"SendErrorAsync: id='{id}' code='{code}' — enviando resposta de erro.");
+        await SendTextAsync(ws, json, ct);
     }
 
     private async Task EmitEventAsync<T>(WebSocket ws, string eventName, T data, CancellationToken ct)
@@ -365,24 +442,24 @@ internal sealed class WebSocketServer
         await SendTextAsync(ws, JsonSerializer.Serialize(evt, JsonOpts), ct);
     }
 
-    // Envia para o cliente atual (usado pelo Start/Stop para emitir status).
     private async Task BroadcastStatusAsync(bool connected)
     {
         var ws = _currentWs;
         if (ws?.State != WebSocketState.Open) return;
         try
         {
+            var docTitle = Application.UiApplication?.ActiveUIDocument?.Document?.Title;
             await EmitEventAsync(ws, "status",
-                new StatusEventData(connected, null, _settings.Mode),
+                new StatusEventData(connected, docTitle, _settings.Mode),
                 CancellationToken.None);
         }
-        catch { /* cliente desconectou — ignora */ }
+        catch { /* cliente desconectou */ }
     }
 
     // Serializa writes no WebSocket (não suporta concorrência nativa).
     private async Task SendTextAsync(WebSocket ws, string text, CancellationToken ct)
     {
-        await _sendLock.WaitAsync(ct);
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             if (ws.State != WebSocketState.Open) return;
@@ -391,12 +468,9 @@ internal sealed class WebSocketServer
                 new ArraySegment<byte>(bytes),
                 WebSocketMessageType.Text,
                 endOfMessage: true,
-                ct);
+                ct).ConfigureAwait(false);
         }
-        finally
-        {
-            _sendLock.Release();
-        }
+        finally { _sendLock.Release(); }
     }
 
     // ─── runtime.json ────────────────────────────────────────────────────────
@@ -419,5 +493,31 @@ internal sealed class WebSocketServer
         File.WriteAllText(
             Path.Combine(dir, "runtime.json"),
             JsonSerializer.Serialize(data, JsonOpts));
+    }
+
+    // ─── Helpers ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Formata um erro de runtime para o campo details da resposta.
+    /// Inclui tipo, mensagem e as primeiras 10 linhas do stack trace.
+    /// </summary>
+    private static string FormatRuntimeError(Exception ex)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Tipo: {ex.GetType().FullName}");
+        sb.AppendLine($"Mensagem: {ex.Message}");
+
+        if (ex.StackTrace != null)
+        {
+            var lines = ex.StackTrace.Split('\n').Take(10);
+            sb.AppendLine("Stack trace (primeiras 10 linhas):");
+            foreach (var line in lines)
+                sb.AppendLine(line.TrimEnd());
+        }
+
+        if (ex.InnerException != null)
+            sb.AppendLine($"Causa: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
+
+        return sb.ToString().TrimEnd();
     }
 }
