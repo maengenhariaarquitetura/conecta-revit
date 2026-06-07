@@ -75,7 +75,9 @@ export interface ExecuteCodeResult {
   returnValue: unknown;
   log: string[];
   transactionName: string | null;
-  elementsCreated: number[];
+  elementsCreated:  number[];
+  elementsModified: number[];
+  elementsDeleted:  number[];
 }
 
 // ─── Métodos: get_context, run_tool, list_tools, revert_last ─────────────────

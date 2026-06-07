@@ -71,10 +71,12 @@ public record ExecuteCodeParams(
 );
 
 public record ExecuteCodeResult(
-    [property: JsonPropertyName("returnValue")]     object? ReturnValue,
-    [property: JsonPropertyName("log")]             List<string> Log,
-    [property: JsonPropertyName("transactionName")] string? TransactionName,
-    [property: JsonPropertyName("elementsCreated")] List<long> ElementsCreated
+    [property: JsonPropertyName("returnValue")]      object? ReturnValue,
+    [property: JsonPropertyName("log")]              List<string> Log,
+    [property: JsonPropertyName("transactionName")]  string? TransactionName,
+    [property: JsonPropertyName("elementsCreated")]  List<long> ElementsCreated,
+    [property: JsonPropertyName("elementsModified")] List<long> ElementsModified,
+    [property: JsonPropertyName("elementsDeleted")]  List<long> ElementsDeleted
 );
 
 // ─── Métodos: get_context, run_tool, list_tools, revert_last ─────────────────

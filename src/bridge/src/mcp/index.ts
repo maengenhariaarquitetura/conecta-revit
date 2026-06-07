@@ -26,22 +26,56 @@ export function registerTools(
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
-        name:        "revit_execute_code",
-        description: "Executa código C# no Revit via a API do Revit. " +
-                     "Em modo seguro (padrão), o código NÃO deve abrir transação própria — " +
-                     "o harness envelopa automaticamente. " +
-                     "Retorna o valor da última expressão do script.",
+        name: "revit_execute_code",
+        description:
+          "Executa código C# arbitrário no Autodesk Revit via a Revit API.\n\n" +
+
+          "## Modos de execução\n" +
+          "- **safe** (padrão): o harness abre e commita automaticamente uma Transaction em volta do código. " +
+            "O script NÃO deve abrir Transaction própria — escreva as modificações diretamente " +
+            "(ex.: `Wall.Create(doc, ...)`). Abrir Transaction dentro do script em Modo Seguro " +
+            "causa erro de transação aninhada.\n" +
+          "- **direct**: o script gerencia suas próprias transações com " +
+            "`using (var tx = new Transaction(Doc, \"nome\")) { tx.Start(); ...; tx.Commit(); }`.\n\n" +
+
+          "## Globais disponíveis (sempre injetados)\n" +
+          "- `Doc` — `Autodesk.Revit.DB.Document` ativo\n" +
+          "- `UiDoc` — `Autodesk.Revit.UI.UIDocument` ativo\n" +
+          "- `UiApp` — `Autodesk.Revit.UI.UIApplication`\n" +
+          "- `Log(string msg)` — adiciona uma linha ao campo `log[]` do resultado\n\n" +
+
+          "## Unidades\n" +
+          "A Revit API trabalha internamente em **pés** (feet). " +
+          "Converta de metros: `UnitUtils.ConvertToInternalUnits(valor, UnitTypeId.Meters)` " +
+          "ou multiplique por `0.3048`.\n\n" +
+
+          "## Namespaces já importados\n" +
+          "`System`, `System.Linq`, `System.Collections.Generic`, " +
+          "`Autodesk.Revit.DB`, `Autodesk.Revit.DB.Architecture`, `Autodesk.Revit.UI`.\n\n" +
+
+          "## Valor de retorno\n" +
+          "A última expressão do script é devolvida em `returnValue`. " +
+          "Use `return <expr>;` para retornar explicitamente.",
+
         inputSchema: {
           type: "object" as const,
           properties: {
             code: {
-              type:        "string",
-              description: "Código C# a executar. Globals disponíveis: Doc, UiDoc, UiApp, Log(string).",
+              type: "string",
+              description:
+                "Código C# a executar.\n" +
+                "Em Modo Seguro: escreva modificações diretamente, sem abrir Transaction " +
+                "(ex.: `return Wall.Create(Doc, curve, levelId, false);`).\n" +
+                "Em Modo Direto: gerencie Transaction com `using (var tx = new Transaction(Doc, \"nome\")) { ... }`.",
             },
             mode: {
-              type:        "string",
-              enum:        ["safe", "direct"],
-              description: "Modo de execução. Omitir = usa o modo configurado no add-in (default: safe).",
+              type: "string",
+              enum: ["safe", "direct"],
+              description:
+                "Modo de execução. " +
+                "safe = harness gerencia a Transaction (padrão). " +
+                "direct = script gerencia a própria Transaction. " +
+                "Omitir = usa o modo configurado no add-in (padrão: safe).",
             },
           },
           required: ["code"],
@@ -108,8 +142,12 @@ export function registerTools(
         if (result.transactionName)
           lines.push(`Transação: ${result.transactionName}`);
 
-        if (result.elementsCreated.length > 0)
-          lines.push(`Elementos criados: ${result.elementsCreated.join(", ")}`);
+        // Sempre exibe as 3 listas (mesmo vazias) para o modelo saber o que foi afetado.
+        lines.push(
+          `Criados: [${result.elementsCreated.join(", ")}] | ` +
+          `Modificados: [${result.elementsModified.join(", ")}] | ` +
+          `Deletados: [${result.elementsDeleted.join(", ")}]`
+        );
 
         return {
           content: [{ type: "text" as const, text: lines.join("\n") || "(sem resultado)" }],

@@ -110,16 +110,22 @@ result:
   "returnValue": <json> | null,
   "log": [ "linha 1", "linha 2" ],
   "transactionName": "ConectaRevit: <resumo>" | null,
-  "elementsCreated": [123, 124] 
+  "elementsCreated":  [327558],
+  "elementsModified": [100003],
+  "elementsDeleted":  []
 }
 ```
+- As listas são capturadas automaticamente pelo harness via `DocumentChanged` — não dependem do retorno do script.
+- Em caso de rollback (erro em Modo Seguro), todas as listas são `[]`.
+- IDs são `ElementId.Value` (`long`, Revit 2026).
+
 Erros: `NO_DOCUMENT`, `COMPILATION_ERROR` (com `details` = diagnósticos), `RUNTIME_ERROR` (com `details` = stack resumido), `TRANSACTION_FAILED`, `API_CONTEXT_ERROR`, `TIMEOUT`, `BUSY`.
 
 ### 3.5 `run_tool`
 Executa uma ferramenta de alto nível pré-compilada.
 
 params: `{ "tool": "create_wall", "args": { } }`
-result: `{ "returnValue": <json>, "log": [ ], "elementsCreated": [ ] }`
+result: `{ "returnValue": <json>, "log": [ ], "elementsCreated": [ ], "elementsModified": [ ], "elementsDeleted": [ ] }`
 Erros: `UNKNOWN_TOOL`, `INVALID_ARGS`, + os mesmos de `execute_code`.
 
 ### 3.6 `list_tools`

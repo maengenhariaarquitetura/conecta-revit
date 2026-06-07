@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Events;
 using Autodesk.Revit.UI;
 using ConectaRevit.Addin.Logging;
 using ConectaRevit.Shared;
@@ -299,80 +300,126 @@ internal sealed class ExecutionEngine : IExternalEventHandler
         };
 
         var txName = "ConectaRevit: " + SummarizeCode(code);
-        using var tx = new Transaction(doc, txName);
 
-        AddinLog.Info($"RunSafe: iniciando Transaction '{txName}'.");
-        try { tx.Start(); }
-        catch (Exception ex)
+        // ── Fase 3B: rastreamento de elementos via DocumentChanged ────────────
+        //
+        // MECANISMO ESCOLHIDO: Application.DocumentChanged
+        //   • Dispara na Thread 1 DURANTE tx.Commit() — síncrono, mesmo frame de execução.
+        //   • Fornece exatamente GetAddedElementIds() / GetModifiedElementIds() /
+        //     GetDeletedElementIds() para os elementos afetados NESTE commit.
+        //   • Em rollback, o evento NÃO dispara → listas permanecem vazias. ✓
+        //   • Alternativa (snapshot pré/pós) foi descartada: percorreria o FilteredElement-
+        //     Collector duas vezes e perderia elementos deletados.
+        //
+        // GARANTIA DE DESINCRIÇÃO: a chamada "-= OnDocumentChanged" fica no finally
+        // externo → executa em qualquer caminho (sucesso, erro de compilação, rollback).
+        var createdIds  = new List<long>();
+        var modifiedIds = new List<long>();
+        var deletedIds  = new List<long>();
+
+        void OnDocumentChanged(object? sender, DocumentChangedEventArgs e)
         {
-            throw new TransactionFailedException($"Não foi possível iniciar a transação: {ex.Message}");
+            // Filtra por documento — múltiplos documentos podem estar abertos.
+            if (!e.GetDocument().Equals(doc)) return;
+            foreach (var id in e.GetAddedElementIds())    createdIds.Add(id.Value);
+            foreach (var id in e.GetModifiedElementIds()) modifiedIds.Add(id.Value);
+            foreach (var id in e.GetDeletedElementIds())  deletedIds.Add(id.Value);
         }
+
+        AddinLog.Info("RunSafe: inscrevendo Application.DocumentChanged (rastreamento Fase 3B).");
+        app.Application.DocumentChanged += OnDocumentChanged;
 
         try
         {
-            // THREADING CRÍTICO:
-            // NÃO usar Task.Run aqui. Execute() já roda na Thread 1 (ExternalEvent handler).
-            // Task.Run moveria a execução do script para o ThreadPool: leituras passam, mas
-            // qualquer write no documento lança "Cannot modify the document".
-            //
-            // .GetAwaiter().GetResult() bloqueia a Thread 1 brevemente enquanto o Roslyn
-            // compila/executa. Não causa deadlock: HandleExecuteCodeAsync (lado WS) aguarda
-            // o TCS em thread de background (ThreadPool) — Thread 1 está livre para bloquear.
-            AddinLog.Info(
-                $"RunSafe: iniciando execução Roslyn. " +
-                $"Thread={Environment.CurrentManagedThreadId} (deve ser Thread 1).");
+            using var tx = new Transaction(doc, txName);
 
-            ScriptState<object> state;
+            AddinLog.Info($"RunSafe: iniciando Transaction '{txName}'.");
+            try { tx.Start(); }
+            catch (Exception ex)
+            {
+                throw new TransactionFailedException($"Não foi possível iniciar a transação: {ex.Message}");
+            }
+
             try
             {
-                state = CSharpScript
-                    .RunAsync<object>(code, _scriptOptions, globals, typeof(ScriptGlobals))
-                    .GetAwaiter()
-                    .GetResult();
+                // THREADING CRÍTICO:
+                // NÃO usar Task.Run aqui. Execute() já roda na Thread 1 (ExternalEvent handler).
+                // Task.Run moveria a execução do script para o ThreadPool: leituras passam, mas
+                // qualquer write no documento lança "Cannot modify the document".
+                //
+                // .GetAwaiter().GetResult() bloqueia a Thread 1 brevemente enquanto o Roslyn
+                // compila/executa. Não causa deadlock: HandleExecuteCodeAsync (lado WS) aguarda
+                // o TCS em thread de background (ThreadPool) — Thread 1 está livre para bloquear.
+                AddinLog.Info(
+                    $"RunSafe: iniciando execução Roslyn. " +
+                    $"Thread={Environment.CurrentManagedThreadId} (deve ser Thread 1).");
+
+                ScriptState<object> state;
+                try
+                {
+                    state = CSharpScript
+                        .RunAsync<object>(code, _scriptOptions, globals, typeof(ScriptGlobals))
+                        .GetAwaiter()
+                        .GetResult();
+                }
+                catch (CompilationErrorException cee)
+                {
+                    var diags = string.Join("\n", cee.Diagnostics
+                        .Where(d => d.Severity == DiagnosticSeverity.Error)
+                        .Select(d =>
+                        {
+                            var pos = d.Location.GetLineSpan();
+                            return $"{d.Id} ({pos.StartLinePosition.Line + 1},{pos.StartLinePosition.Character + 1}): {d.GetMessage()}";
+                        }));
+                    AddinLog.Error($"RunSafe: CompilationErrorException:\n{diags}");
+                    throw new CompilationException(diags);
+                }
+                catch (AggregateException agg) when (agg.InnerException != null)
+                {
+                    AddinLog.Error($"RunSafe: AggregateException: {agg.InnerException.GetType().Name}: {agg.InnerException.Message}");
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo
+                        .Capture(agg.InnerException).Throw();
+                    throw; // unreachable
+                }
+
+                AddinLog.Info(
+                    $"RunSafe: script OK. " +
+                    $"Thread={Environment.CurrentManagedThreadId} (deve ser Thread 1). " +
+                    $"Fazendo commit da Transaction.");
+
+                // DocumentChanged dispara aqui, ainda na Thread 1, dentro de Commit().
+                var status = tx.Commit();
+                if (status != TransactionStatus.Committed)
+                    throw new TransactionFailedException($"Commit retornou status: {status}");
+
+                LastTransactionName = txName;
+                AddinLog.Info(
+                    $"RunSafe: committed '{txName}'. " +
+                    $"ReturnValue tipo={state.ReturnValue?.GetType().Name ?? "null"}. " +
+                    $"Elementos — Created={createdIds.Count}, Modified={modifiedIds.Count}, Deleted={deletedIds.Count}.");
+
+                return new ExecuteCodeResult(
+                    ReturnValue:      ToJsonSafe(state.ReturnValue),
+                    Log:              logLines,
+                    TransactionName:  txName,
+                    ElementsCreated:  createdIds,
+                    ElementsModified: modifiedIds,
+                    ElementsDeleted:  deletedIds
+                );
             }
-            catch (CompilationErrorException cee)
+            catch
             {
-                var diags = string.Join("\n", cee.Diagnostics
-                    .Where(d => d.Severity == DiagnosticSeverity.Error)
-                    .Select(d =>
-                    {
-                        var pos = d.Location.GetLineSpan();
-                        return $"{d.Id} ({pos.StartLinePosition.Line + 1},{pos.StartLinePosition.Character + 1}): {d.GetMessage()}";
-                    }));
-                AddinLog.Error($"RunSafe: CompilationErrorException:\n{diags}");
-                throw new CompilationException(diags);
+                // Rollback: DocumentChanged NÃO dispara → listas permanecem vazias. ✓
+                AddinLog.Warn("RunSafe: rollback da Transaction. Listas de elementos permanecem vazias.");
+                if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack();
+                throw;
             }
-            catch (AggregateException agg) when (agg.InnerException != null)
-            {
-                AddinLog.Error($"RunSafe: AggregateException: {agg.InnerException.GetType().Name}: {agg.InnerException.Message}");
-                System.Runtime.ExceptionServices.ExceptionDispatchInfo
-                    .Capture(agg.InnerException).Throw();
-                throw; // unreachable
-            }
-
-            AddinLog.Info(
-                $"RunSafe: script OK. " +
-                $"Thread={Environment.CurrentManagedThreadId} (deve ser Thread 1). " +
-                $"Fazendo commit da Transaction.");
-            var status = tx.Commit();
-            if (status != TransactionStatus.Committed)
-                throw new TransactionFailedException($"Commit retornou status: {status}");
-
-            LastTransactionName = txName;
-            AddinLog.Info($"RunSafe: committed '{txName}'. ReturnValue tipo={state.ReturnValue?.GetType().Name ?? "null"}.");
-
-            return new ExecuteCodeResult(
-                ReturnValue:     ToJsonSafe(state.ReturnValue),
-                Log:             logLines,
-                TransactionName: txName,
-                ElementsCreated: []    // TODO Fase 3B
-            );
         }
-        catch
+        finally
         {
-            AddinLog.Warn("RunSafe: rollback da Transaction.");
-            if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack();
-            throw;
+            // Sempre desincreve — sucesso, rollback, CompilationError, ou qualquer exceção.
+            app.Application.DocumentChanged -= OnDocumentChanged;
+            AddinLog.Info("RunSafe: desinscrevendo Application.DocumentChanged.");
         }
     }
 

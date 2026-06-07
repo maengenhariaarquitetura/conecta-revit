@@ -411,9 +411,21 @@ internal sealed class WebSocketServer
         catch (Exception ex)
         {
             AddinLog.Error($"HandleExecuteCodeAsync: id='{id}' — RUNTIME_ERROR: {ex.GetType().Name}: {ex.Message}");
+
+            // Detecta tentativa de abrir Transaction aninhada em Modo Seguro.
+            // O harness já abre uma Transaction antes do script; se o script
+            // tentar abrir outra, o Revit lança InvalidOperationException com
+            // "transaction" na mensagem. Instruímos o modelo a corrigir.
+            var isNestedTx = ex is InvalidOperationException
+                && ex.Message.IndexOf("transaction", StringComparison.OrdinalIgnoreCase) >= 0;
+
+            var primaryMsg = isNestedTx
+                ? "Em Modo Seguro não abra Transaction; escreva a modificação direto " +
+                  "(ex.: Wall.Create(Doc, ...)). O harness já gerencia a Transaction automaticamente."
+                : $"{ex.GetType().Name}: {ex.Message}";
+
             var summary = FormatRuntimeError(ex);
-            await SendErrorAsync(ws, id, "RUNTIME_ERROR",
-                $"{ex.GetType().Name}: {ex.Message}", summary, ct);
+            await SendErrorAsync(ws, id, "RUNTIME_ERROR", primaryMsg, summary, ct);
         }
     }
 
