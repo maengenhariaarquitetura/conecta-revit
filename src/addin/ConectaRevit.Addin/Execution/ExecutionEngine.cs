@@ -51,7 +51,8 @@ internal sealed class ExecutionEngine : IExternalEventHandler
     private ExternalEvent?  _externalEvent;
 
     // Fila serial: um job por despacho de Execute() (ARCHITECTURE § 5.2, máx. 10).
-    private readonly ConcurrentQueue<ExecuteJob> _queue = new();
+    // Polimórfica: aceita ExecuteJob, GetContextJob, RevertLastJob.
+    private readonly ConcurrentQueue<RevitJob> _queue = new();
 
     // Nome da última TransactionGroup confirmada — revert_last (Fase 3C).
     internal string? LastTransactionName { get; private set; }
@@ -96,11 +97,35 @@ internal sealed class ExecutionEngine : IExternalEventHandler
         {
             AddinLog.Error(
                 $"EnqueueAsync: Raise() não foi Accepted ({raiseResult}). TCS resolvido com erro.");
-            job.Tcs.TrySetException(new InvalidOperationException(
+            job.TrySetException(new InvalidOperationException(
                 $"ExternalEvent.Raise() retornou {raiseResult}. " +
                 "Tente desconectar e reconectar o servidor ConectaRevit."));
         }
 
+        return job.Tcs.Task.WaitAsync(ct);
+    }
+
+    internal Task<GetContextResult> GetContextAsync(CancellationToken ct)
+    {
+        var job = new GetContextJob(ct);
+        _queue.Enqueue(job);
+        AddinLog.Info($"GetContextAsync: job {job.JobId} enfileirado.");
+        var raiseResult = _externalEvent!.Raise();
+        if (raiseResult != ExternalEventRequest.Accepted)
+            job.TrySetException(new InvalidOperationException(
+                $"ExternalEvent.Raise() retornou {raiseResult}."));
+        return job.Tcs.Task.WaitAsync(ct);
+    }
+
+    internal Task<RevertLastResult> RevertLastAsync(CancellationToken ct)
+    {
+        var job = new RevertLastJob(ct);
+        _queue.Enqueue(job);
+        AddinLog.Info($"RevertLastAsync: job {job.JobId} enfileirado.");
+        var raiseResult = _externalEvent!.Raise();
+        if (raiseResult != ExternalEventRequest.Accepted)
+            job.TrySetException(new InvalidOperationException(
+                $"ExternalEvent.Raise() retornou {raiseResult}."));
         return job.Tcs.Task.WaitAsync(ct);
     }
 
@@ -128,7 +153,7 @@ internal sealed class ExecutionEngine : IExternalEventHandler
             $"EngineHashCode={RuntimeHelpers.GetHashCode(this)}. " +
             $"FilaCount={_queue.Count}.");
 
-        ExecuteJob? job = null;
+        RevitJob? job = null;
         try
         {
             // Cacheia UIApplication para leitura da thread WS (volatile em Application).
@@ -141,43 +166,58 @@ internal sealed class ExecutionEngine : IExternalEventHandler
             }
 
             AddinLog.Info(
-                $"Execute(): job {job.JobId} dequeued. " +
+                $"Execute(): job {job.JobId} ({job.GetType().Name}) dequeued. " +
                 $"Cancelado={job.Ct.IsCancellationRequested}. " +
                 $"TemDocumento={app.ActiveUIDocument != null}.");
 
             if (job.Ct.IsCancellationRequested)
             {
-                AddinLog.Info($"Execute(): job {job.JobId} cancelado antes de iniciar. TCS cancelado.");
-                job.Tcs.TrySetCanceled(job.Ct);
+                AddinLog.Info($"Execute(): job {job.JobId} cancelado antes de iniciar.");
+                job.TrySetCanceled();
                 return;
             }
 
-            // ── Timeout no lado do add-in (60 s) ────────────────────────────
-            // Execute() bloqueia a Thread 1 enquanto o Roslyn compila/executa.
-            // Se um diálogo não suprimido ou script em loop prender a thread mais
-            // de 60 s, este callback (ThreadPool) resolve o TCS com TimeoutException,
-            // desbloqueando o lado WS sem esperar para sempre.
-            //
-            // INVARIANTE: TCS aceita apenas a primeira chamada bem-sucedida.
-            // Se o job terminar normalmente antes do timeout, TrySetResult vence.
-            // Se o timeout disparar primeiro, TrySetResult retorna false (no-op).
-            // Não há corrupção de estado em nenhum dos casos.
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(job.Ct);
-            timeoutCts.CancelAfter(TimeSpan.FromSeconds(60));
-            timeoutCts.Token.Register(() =>
+            // Despacha de acordo com o tipo do job.
+            switch (job)
             {
-                if (job.Tcs.Task.IsCompleted) return;
-                AddinLog.Error(
-                    $"Execute(): TIMEOUT 60s — job {job.JobId}. " +
-                    "TCS resolvido com TimeoutException via background callback.");
-                job.Tcs.TrySetException(
-                    new TimeoutException($"A execução excedeu 60s no add-in (job {job.JobId})."));
-            });
+                case ExecuteJob ej:
+                {
+                    // ── Timeout no lado do add-in (60 s) ────────────────────
+                    // Execute() bloqueia a Thread 1 enquanto o Roslyn compila/executa.
+                    // Se um diálogo não suprimido ou script em loop prender a thread mais
+                    // de 60 s, este callback (ThreadPool) resolve o TCS com TimeoutException,
+                    // desbloqueando o lado WS sem esperar para sempre.
+                    //
+                    // INVARIANTE: TCS aceita apenas a primeira chamada bem-sucedida.
+                    // Se o job terminar normalmente antes do timeout, TrySetResult vence.
+                    // Se o timeout disparar primeiro, TrySetResult retorna false (no-op).
+                    // Não há corrupção de estado em nenhum dos casos.
+                    using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ej.Ct);
+                    timeoutCts.CancelAfter(TimeSpan.FromSeconds(60));
+                    timeoutCts.Token.Register(() =>
+                    {
+                        if (ej.IsCompleted) return;
+                        AddinLog.Error(
+                            $"Execute(): TIMEOUT 60s — job {ej.JobId}. " +
+                            "TCS resolvido com TimeoutException via background callback.");
+                        ej.TrySetException(
+                            new TimeoutException($"A execução excedeu 60s no add-in (job {ej.JobId})."));
+                    });
 
-            // DispatchJob isola TODOS os tipos Roslyn.
-            // Se o JIT de DispatchJob falhar (TypeLoadException por DLL Roslyn incompatível),
-            // a exceção é capturada pelo catch(Exception) abaixo e o TCS é resolvido.
-            DispatchJob(app, job, timeoutCts.Token);
+                    // DispatchJob isola TODOS os tipos Roslyn.
+                    // Se o JIT de DispatchJob falhar (TypeLoadException por DLL Roslyn incompatível),
+                    // a exceção é capturada pelo catch(Exception) abaixo e o TCS é resolvido.
+                    DispatchJob(app, ej, timeoutCts.Token);
+                    break;
+                }
+                case GetContextJob gj:
+                    DispatchGetContext(app, gj);
+                    break;
+
+                case RevertLastJob rj:
+                    DispatchRevertLast(app, rj);
+                    break;
+            }
         }
         catch (Exception ex)
         {
@@ -185,14 +225,14 @@ internal sealed class ExecutionEngine : IExternalEventHandler
             // Abrange TypeLoadException, FileLoadException, TypeInitializationException,
             // ReflectionTypeLoadException, CompilationException, NoDocumentException, etc.
             AddinLog.Error($"Execute() EXCEÇÃO:\n{BuildExceptionDiag(ex)}");
-            job?.Tcs.TrySetException(ex);
+            job?.TrySetException(ex);
         }
         finally
         {
             AddinLog.Info(
                 $"Execute() finally. " +
                 $"job={job?.JobId ?? "null"}. " +
-                $"TCS.IsCompleted={job?.Tcs.Task.IsCompleted}. " +
+                $"TCS.IsCompleted={job?.IsCompleted}. " +
                 $"FilaRestante={_queue.Count}.");
 
             if (!_queue.IsEmpty)
@@ -335,9 +375,16 @@ internal sealed class ExecutionEngine : IExternalEventHandler
         void OnDocumentChanged(object? sender, DocumentChangedEventArgs e)
         {
             if (!e.GetDocument().Equals(doc)) return;
-            foreach (var id in e.GetAddedElementIds())    createdIds.Add(id.Value);
-            foreach (var id in e.GetModifiedElementIds()) modifiedIds.Add(id.Value);
-            foreach (var id in e.GetDeletedElementIds())  deletedIds.Add(id.Value);
+            // Bug fix Fase 3B: filtrar elementos internos do Revit (sketch, sketch lines, etc.)
+            // que aparecem em GetAddedElementIds() mesmo ao criar 2 paredes.
+            // Mantemos apenas Model e Annotation — o que o usuário vê e usa.
+            // Deleted: não é possível inspecionar a categoria após deleção → reportar tudo.
+            foreach (var id in e.GetAddedElementIds())
+                if (IsUserFacingElement(doc, id)) createdIds.Add(id.Value);
+            foreach (var id in e.GetModifiedElementIds())
+                if (IsUserFacingElement(doc, id)) modifiedIds.Add(id.Value);
+            foreach (var id in e.GetDeletedElementIds())
+                deletedIds.Add(id.Value);
         }
 
         // ── Supressão de diálogos modais ──────────────────────────────────────
@@ -514,6 +561,167 @@ internal sealed class ExecutionEngine : IExternalEventHandler
         }
     }
 
+    // ── DispatchGetContext ────────────────────────────────────────────────────
+
+    private void DispatchGetContext(UIApplication app, GetContextJob job)
+    {
+        try
+        {
+            AddinLog.Info($"DispatchGetContext: job {job.JobId} iniciado.");
+
+            var uiDoc = app.ActiveUIDocument;
+            if (uiDoc == null)
+            {
+                AddinLog.Warn("DispatchGetContext: sem documento ativo.");
+                job.Tcs.TrySetResult(new GetContextResult(
+                    DocumentTitle:    null,
+                    IsFamilyDocument: false,
+                    ActiveViewId:     null,
+                    ActiveViewName:   null,
+                    ActiveViewType:   null,
+                    UnitSystem:       "Unknown",
+                    Selection:        new List<SelectionItem>()
+                ));
+                return;
+            }
+
+            var doc = uiDoc.Document;
+
+            // ── Sistema de unidades ────────────────────────────────────────────
+            string unitSystem;
+            try
+            {
+                var lengthUnit = doc.GetUnits().GetFormatOptions(SpecTypeId.Length).GetUnitTypeId();
+                unitSystem = (lengthUnit == UnitTypeId.Feet || lengthUnit == UnitTypeId.FeetFractionalInches)
+                    ? "Imperial"
+                    : "Metric";
+            }
+            catch (Exception ex)
+            {
+                AddinLog.Warn($"DispatchGetContext: erro ao ler unidades — {ex.Message}. Usando 'Unknown'.");
+                unitSystem = "Unknown";
+            }
+
+            // ── Vista ativa ───────────────────────────────────────────────────
+            long?   activeViewId   = null;
+            string? activeViewName = null;
+            string? activeViewType = null;
+            try
+            {
+                var view = uiDoc.ActiveView;
+                if (view != null)
+                {
+                    activeViewId   = view.Id.Value;
+                    activeViewName = view.Name;
+                    activeViewType = view.ViewType.ToString();
+                }
+            }
+            catch (Exception ex)
+            {
+                AddinLog.Warn($"DispatchGetContext: erro ao ler vista ativa — {ex.Message}.");
+            }
+
+            // ── Seleção ───────────────────────────────────────────────────────
+            var selection = new List<SelectionItem>();
+            try
+            {
+                foreach (var id in uiDoc.Selection.GetElementIds())
+                {
+                    var el = doc.GetElement(id);
+                    if (el == null) continue;
+                    var cat  = el.Category?.Name ?? "Unknown";
+                    var name = string.IsNullOrEmpty(el.Name) ? id.Value.ToString() : el.Name;
+                    selection.Add(new SelectionItem(Id: id.Value, Category: cat, Name: name));
+                }
+            }
+            catch (Exception ex)
+            {
+                AddinLog.Warn($"DispatchGetContext: erro ao ler seleção — {ex.Message}. Retornando vazia.");
+            }
+
+            AddinLog.Info(
+                $"DispatchGetContext: doc='{doc.Title}', " +
+                $"family={doc.IsFamilyDocument}, " +
+                $"view='{activeViewName}' ({activeViewType}), " +
+                $"units={unitSystem}, " +
+                $"selection={selection.Count}.");
+
+            job.Tcs.TrySetResult(new GetContextResult(
+                DocumentTitle:    doc.Title,
+                IsFamilyDocument: doc.IsFamilyDocument,
+                ActiveViewId:     activeViewId,
+                ActiveViewName:   activeViewName,
+                ActiveViewType:   activeViewType,
+                UnitSystem:       unitSystem,
+                Selection:        selection
+            ));
+        }
+        catch (Exception ex)
+        {
+            AddinLog.Error($"DispatchGetContext: exceção — {BuildExceptionDiag(ex)}");
+            job.TrySetException(ex);
+        }
+    }
+
+    // ── DispatchRevertLast ────────────────────────────────────────────────────
+
+    private void DispatchRevertLast(UIApplication app, RevertLastJob job)
+    {
+        try
+        {
+            AddinLog.Info($"DispatchRevertLast: job {job.JobId} iniciado. LastTx='{LastTransactionName}'.");
+
+            var cmdId = RevitCommandId.LookupPostableCommandId(PostableCommand.Undo);
+            if (!app.CanPostCommand(cmdId))
+            {
+                AddinLog.Warn("DispatchRevertLast: CanPostCommand(Undo) = false. Nada a desfazer.");
+                job.Tcs.TrySetResult(new RevertLastResult(Reverted: false, TransactionName: null));
+                return;
+            }
+
+            // PostCommand é assíncrono — o Undo ocorre após Execute() retornar.
+            // Não é possível capturar o nome da transação desfeita de forma síncrona.
+            // Retornamos o nome salvo em LastTransactionName (do último job Execute bem-sucedido).
+            var txName = LastTransactionName;
+            app.PostCommand(cmdId);
+
+            AddinLog.Info($"DispatchRevertLast: PostCommand(Undo) enviado. txName='{txName}'.");
+            job.Tcs.TrySetResult(new RevertLastResult(Reverted: true, TransactionName: txName));
+        }
+        catch (Exception ex)
+        {
+            AddinLog.Error($"DispatchRevertLast: exceção — {BuildExceptionDiag(ex)}");
+            job.TrySetException(ex);
+        }
+    }
+
+    // ── IsUserFacingElement ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// Retorna true apenas para elementos visíveis/usáveis pelo usuário:
+    /// Model (paredes, pisos, etc.) e Annotation (cotas, tags, etc.).
+    ///
+    /// Filtra elementos internos do Revit (sketches, sketch lines, reference planes
+    /// auxiliares, etc.) que aparecem em GetAddedElementIds() mas não representam
+    /// elementos gerados pelo script do usuário.
+    ///
+    /// Deleted: não se aplica — o elemento já foi removido do documento.
+    /// </summary>
+    private static bool IsUserFacingElement(Document doc, ElementId id)
+    {
+        try
+        {
+            var el = doc.GetElement(id);
+            if (el?.Category == null) return false;
+            var ct = el.Category.CategoryType;
+            return ct == CategoryType.Model || ct == CategoryType.Annotation;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static ScriptOptions BuildScriptOptions()
@@ -600,19 +808,63 @@ internal sealed class ExecutionEngine : IExternalEventHandler
     }
 }
 
+// ── Hierarquia de jobs ────────────────────────────────────────────────────────
+//
+// RevitJob: base polimórfica — permite ConcurrentQueue<RevitJob> e switch em Execute().
+// Cada subclasse tem seu próprio TCS tipado (impossível no base genérico).
+// TrySetCanceled / TrySetException / IsCompleted delegam para o TCS interno.
+
+internal abstract class RevitJob
+{
+    internal string             JobId { get; } = Guid.NewGuid().ToString("N")[..8];
+    internal CancellationToken  Ct    { get; }
+
+    protected RevitJob(CancellationToken ct) => Ct = ct;
+
+    internal abstract bool IsCompleted         { get; }
+    internal abstract void TrySetCanceled();
+    internal abstract void TrySetException(Exception ex);
+}
+
 // ── ExecuteJob ────────────────────────────────────────────────────────────────
 
-internal sealed class ExecuteJob
+internal sealed class ExecuteJob : RevitJob
 {
-    internal string                                    JobId  { get; }
     internal ExecuteCodeParams                         Params { get; }
-    internal CancellationToken                         Ct     { get; }
     internal TaskCompletionSource<ExecuteCodeResult>   Tcs    { get; } = new();
 
-    internal ExecuteJob(ExecuteCodeParams p, CancellationToken ct)
+    internal override bool IsCompleted => Tcs.Task.IsCompleted;
+    internal override void TrySetCanceled()          => Tcs.TrySetCanceled(Ct);
+    internal override void TrySetException(Exception ex) => Tcs.TrySetException(ex);
+
+    internal ExecuteJob(ExecuteCodeParams p, CancellationToken ct) : base(ct)
     {
-        JobId  = Guid.NewGuid().ToString("N")[..8];
         Params = p;
-        Ct     = ct;
     }
+}
+
+// ── GetContextJob ─────────────────────────────────────────────────────────────
+
+internal sealed class GetContextJob : RevitJob
+{
+    internal TaskCompletionSource<GetContextResult>    Tcs    { get; } = new();
+
+    internal override bool IsCompleted => Tcs.Task.IsCompleted;
+    internal override void TrySetCanceled()          => Tcs.TrySetCanceled(Ct);
+    internal override void TrySetException(Exception ex) => Tcs.TrySetException(ex);
+
+    internal GetContextJob(CancellationToken ct) : base(ct) { }
+}
+
+// ── RevertLastJob ─────────────────────────────────────────────────────────────
+
+internal sealed class RevertLastJob : RevitJob
+{
+    internal TaskCompletionSource<RevertLastResult>    Tcs    { get; } = new();
+
+    internal override bool IsCompleted => Tcs.Task.IsCompleted;
+    internal override void TrySetCanceled()          => Tcs.TrySetCanceled(Ct);
+    internal override void TrySetException(Exception ex) => Tcs.TrySetException(ex);
+
+    internal RevertLastJob(CancellationToken ct) : base(ct) { }
 }

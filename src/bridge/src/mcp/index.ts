@@ -92,10 +92,46 @@ export function registerTools(
           required: ["code"],
         },
       },
-      // TODO Fase 3: revit_get_context
-      // TODO Fase 3: revit_run_tool
-      // TODO Fase 3: revit_list_tools
-      // TODO Fase 3: revit_revert_last
+      {
+        name: "revit_get_context",
+        description:
+          "Retorna o contexto atual do Revit: documento ativo, vista ativa, sistema de unidades e seleção atual.\n\n" +
+          "Operação de leitura — não modifica o documento, não cria Transaction.\n\n" +
+          "## Campos retornados\n" +
+          "- `documentTitle` — título do documento ativo (null se nenhum documento aberto)\n" +
+          "- `isFamilyDocument` — true se for um arquivo de família (.rfa)\n" +
+          "- `activeViewId` / `activeViewName` / `activeViewType` — vista ativa\n" +
+          "- `unitSystem` — `\"Metric\"` ou `\"Imperial\"` (baseado nas configurações do projeto)\n" +
+          "- `selection` — lista de elementos selecionados: `{ id, category, name }`\n\n" +
+          "## Uso típico\n" +
+          "Chame antes de `revit_execute_code` para saber o sistema de unidades, o tipo de vista " +
+          "ativa e os elementos selecionados pelo usuário.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+          required: [],
+        },
+      },
+      {
+        name: "revit_revert_last",
+        description:
+          "Desfaz a última operação executada via `revit_execute_code` (equivalente a Ctrl+Z no Revit).\n\n" +
+          "## Comportamento\n" +
+          "- Usa `PostableCommand.Undo` — o Revit processa o Undo após retornar desta tool.\n" +
+          "- `reverted: true` significa que o comando Undo foi postado com sucesso.\n" +
+          "- `reverted: false` significa que não havia operação para desfazer (histórico vazio).\n" +
+          "- `transactionName` — nome da última transação confirmada pelo harness (pode ser null).\n\n" +
+          "## Limitações\n" +
+          "- A operação é assíncrona: o Revit executa o Undo depois que esta chamada retorna.\n" +
+          "- Desfaz a última transação do histórico do Revit — que pode não ser do ConectaRevit " +
+          "se o usuário realizou outras ações manuais entre as chamadas.",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+          required: [],
+        },
+      },
+      // TODO Fase 3D: revit_run_tool, revit_list_tools
     ],
   }));
 
@@ -166,6 +202,91 @@ export function registerTools(
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.error(`revit_execute_code falhou: ${msg}`);
+        return {
+          content: [{ type: "text" as const, text: `Erro: ${msg}` }],
+          isError: true,
+        };
+      }
+    }
+
+    if (name === "revit_get_context") {
+      log.info("revit_get_context chamada.");
+      const client = await getClient();
+
+      if (!client) {
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              "❌ Revit não conectado.\n\n" +
+              "Verifique se o Revit está aberto e o botão 'Conectar' foi clicado.",
+          }],
+          isError: true,
+        };
+      }
+
+      try {
+        const r = await client.getContext();
+        const lines: string[] = [];
+
+        lines.push(`Documento: ${r.documentTitle ?? "(sem documento)"}`);
+        if (r.isFamilyDocument) lines.push("Tipo: Família (.rfa)");
+        lines.push(`Unidades: ${r.unitSystem}`);
+
+        if (r.activeViewName)
+          lines.push(`Vista ativa: ${r.activeViewName} (${r.activeViewType}, id=${r.activeViewId})`);
+        else
+          lines.push("Vista ativa: (nenhuma)");
+
+        if (r.selection.length === 0) {
+          lines.push("Seleção: (vazia)");
+        } else {
+          lines.push(`Seleção (${r.selection.length} elemento(s)):`);
+          for (const s of r.selection)
+            lines.push(`  id=${s.id}  categoria="${s.category}"  nome="${s.name}"`);
+        }
+
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error(`revit_get_context falhou: ${msg}`);
+        return {
+          content: [{ type: "text" as const, text: `Erro: ${msg}` }],
+          isError: true,
+        };
+      }
+    }
+
+    if (name === "revit_revert_last") {
+      log.info("revit_revert_last chamada.");
+      const client = await getClient();
+
+      if (!client) {
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              "❌ Revit não conectado.\n\n" +
+              "Verifique se o Revit está aberto e o botão 'Conectar' foi clicado.",
+          }],
+          isError: true,
+        };
+      }
+
+      try {
+        const r = await client.revertLast();
+        if (!r.reverted) {
+          return {
+            content: [{ type: "text" as const, text: "Nada a desfazer (histórico vazio)." }],
+          };
+        }
+        const txInfo = r.transactionName ? ` ("${r.transactionName}")` : "";
+        return {
+          content: [{ type: "text" as const, text: `✅ Undo postado${txInfo}. O Revit irá desfazer a última operação.` }],
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error(`revit_revert_last falhou: ${msg}`);
         return {
           content: [{ type: "text" as const, text: `Erro: ${msg}` }],
           isError: true,

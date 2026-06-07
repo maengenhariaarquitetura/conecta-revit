@@ -286,6 +286,12 @@ internal sealed class WebSocketServer
                 case "execute_code":
                     await HandleExecuteCodeAsync(ws, id, paramsEl, ct).ConfigureAwait(false);
                     break;
+                case "get_context":
+                    await HandleGetContextAsync(ws, id, ct).ConfigureAwait(false);
+                    break;
+                case "revert_last":
+                    await HandleRevertLastAsync(ws, id, ct).ConfigureAwait(false);
+                    break;
                 default:
                     await SendErrorAsync(ws, id,
                         "METHOD_NOT_FOUND", $"Método desconhecido: {method}", null, ct)
@@ -434,6 +440,62 @@ internal sealed class WebSocketServer
 
             var summary = FormatRuntimeError(ex);
             await SendErrorAsync(ws, id, "RUNTIME_ERROR", primaryMsg, summary, ct);
+        }
+    }
+
+    // get_context (PROTOCOL.md § 3.3)
+    private async Task HandleGetContextAsync(WebSocket ws, string id, CancellationToken ct)
+    {
+        AddinLog.Info($"HandleGetContextAsync: id='{id}'.");
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(30));
+
+        try
+        {
+            var result = await _engine.GetContextAsync(cts.Token).ConfigureAwait(false);
+            AddinLog.Info($"HandleGetContextAsync: id='{id}' — OK. doc='{result.DocumentTitle}'.");
+            await SendSuccessAsync(ws, id, result, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            await SendErrorAsync(ws, id, "TIMEOUT",
+                "get_context excedeu 30s no add-in.", null, ct);
+        }
+        catch (Exception ex)
+        {
+            AddinLog.Error($"HandleGetContextAsync: id='{id}' — RUNTIME_ERROR: {ex.Message}");
+            await SendErrorAsync(ws, id, "RUNTIME_ERROR",
+                $"{ex.GetType().Name}: {ex.Message}", FormatRuntimeError(ex), ct);
+        }
+    }
+
+    // revert_last (PROTOCOL.md § 3.7)
+    private async Task HandleRevertLastAsync(WebSocket ws, string id, CancellationToken ct)
+    {
+        AddinLog.Info($"HandleRevertLastAsync: id='{id}'.");
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(30));
+
+        try
+        {
+            var result = await _engine.RevertLastAsync(cts.Token).ConfigureAwait(false);
+            AddinLog.Info(
+                $"HandleRevertLastAsync: id='{id}' — OK. " +
+                $"reverted={result.Reverted}, tx='{result.TransactionName}'.");
+            await SendSuccessAsync(ws, id, result, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            await SendErrorAsync(ws, id, "TIMEOUT",
+                "revert_last excedeu 30s no add-in.", null, ct);
+        }
+        catch (Exception ex)
+        {
+            AddinLog.Error($"HandleRevertLastAsync: id='{id}' — RUNTIME_ERROR: {ex.Message}");
+            await SendErrorAsync(ws, id, "RUNTIME_ERROR",
+                $"{ex.GetType().Name}: {ex.Message}", FormatRuntimeError(ex), ct);
         }
     }
 

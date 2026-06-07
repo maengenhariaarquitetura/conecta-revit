@@ -1,21 +1,21 @@
 {
-  "name": "conecta-revit-bridge",
-  "version": "0.1.0",
-  "description": "Ponte MCP entre o Claude Desktop e o add-in ConectaRevit no Revit",
-  "main": "dist/index.js",
-  "scripts": {
-    "prebuild": "node copy-shared.js",
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "pack:mcpb": "node ../../installer/build-mcpb.js"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "ws": "^8.0.0"
-  },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@types/ws": "^8.0.0",
-    "typescript": "^5.0.0"
-  }
+    "name":  "conecta-revit-bridge",
+    "version":  "0.1.0",
+    "description":  "Ponte MCP entre o Claude Desktop e o add-in ConectaRevit no Revit",
+    "main":  "dist/index.js",
+    "scripts":  {
+                    "prebuild":  "node copy-shared.js",
+                    "build":  "tsc",
+                    "start":  "node dist/index.js",
+                    "pack:mcpb":  "node ../../installer/build-mcpb.js"
+                },
+    "dependencies":  {
+                         "@modelcontextprotocol/sdk":  "^1.0.0",
+                         "ws":  "^8.0.0"
+                     },
+    "devDependencies":  {
+                            "@types/node":  "^20.0.0",
+                            "@types/ws":  "^8.0.0",
+                            "typescript":  "^5.0.0"
+                        }
 }

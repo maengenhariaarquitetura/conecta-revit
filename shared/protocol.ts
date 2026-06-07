@@ -80,8 +80,33 @@ export interface ExecuteCodeResult {
   elementsDeleted:  number[];
 }
 
-// ─── Métodos: get_context, run_tool, list_tools, revert_last ─────────────────
-// TODO Fase 3: adicionar params/result de get_context, run_tool, list_tools, revert_last.
+// ─── Método: get_context (§ 3.3) ─────────────────────────────────────────────
+
+export interface SelectionItem {
+  id:       number;
+  category: string;
+  name:     string;
+}
+
+export interface GetContextResult {
+  documentTitle:    string | null;
+  isFamilyDocument: boolean;
+  activeViewId:     number | null;
+  activeViewName:   string | null;
+  activeViewType:   string | null;
+  unitSystem:       string;           // "Metric" | "Imperial"
+  selection:        SelectionItem[];
+}
+
+// ─── Método: revert_last (§ 3.7) ─────────────────────────────────────────────
+
+export interface RevertLastResult {
+  reverted:        boolean;
+  transactionName: string | null;
+}
+
+// ─── Métodos: run_tool, list_tools ───────────────────────────────────────────
+// TODO Fase 3D: adicionar params/result de run_tool, list_tools.
 
 // ─── Dados de eventos (§ 4) ──────────────────────────────────────────────────
 

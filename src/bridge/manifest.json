@@ -1,21 +1,23 @@
 {
-  "manifest_version": "0.2",
-  "name": "conecta-revit",
-  "version": "0.1.0",
-  "description": "Liga o Autodesk Revit ao Claude Desktop — execute operações da API do Revit direto do chat",
-  "author": {
-    "name": "Antigravity"
-  },
-  "server": {
-    "type": "node",
-    "entry_point": "index.js",
-    "mcp_config": {
-      "command": "node",
-      "args": [
-        "${__dirname}/index.js"
-      ],
-      "env": {}
-    }
-  },
-  "license": "UNLICENSED"
+    "manifest_version":  "0.2",
+    "name":  "conecta-revit",
+    "version":  "0.1.0",
+    "description":  "Liga o Autodesk Revit ao Claude Desktop Ã¢â‚¬â€ execute operaÃƒÂ§ÃƒÂµes da API do Revit direto do chat",
+    "author":  {
+                   "name":  "Antigravity"
+               },
+    "server":  {
+                   "type":  "node",
+                   "entry_point":  "index.js",
+                   "mcp_config":  {
+                                      "command":  "node",
+                                      "args":  [
+                                                   "${__dirname}/index.js"
+                                               ],
+                                      "env":  {
+
+                                              }
+                                  }
+               },
+    "license":  "UNLICENSED"
 }

@@ -79,8 +79,34 @@ public record ExecuteCodeResult(
     [property: JsonPropertyName("elementsDeleted")]  List<long> ElementsDeleted
 );
 
-// ─── Métodos: get_context, run_tool, list_tools, revert_last ─────────────────
-// TODO Fase 3: adicionar params/result de get_context, run_tool, list_tools, revert_last.
+// ─── Método: get_context (§ 3.3) ─────────────────────────────────────────────
+
+/// <summary>Item de seleção retornado por get_context.</summary>
+public record SelectionItem(
+    [property: JsonPropertyName("id")]       long   Id,
+    [property: JsonPropertyName("category")] string Category,
+    [property: JsonPropertyName("name")]     string Name
+);
+
+public record GetContextResult(
+    [property: JsonPropertyName("documentTitle")]    string?          DocumentTitle,
+    [property: JsonPropertyName("isFamilyDocument")] bool             IsFamilyDocument,
+    [property: JsonPropertyName("activeViewId")]     long?            ActiveViewId,
+    [property: JsonPropertyName("activeViewName")]   string?          ActiveViewName,
+    [property: JsonPropertyName("activeViewType")]   string?          ActiveViewType,
+    [property: JsonPropertyName("unitSystem")]       string           UnitSystem,
+    [property: JsonPropertyName("selection")]        List<SelectionItem> Selection
+);
+
+// ─── Método: revert_last (§ 3.7) ─────────────────────────────────────────────
+
+public record RevertLastResult(
+    [property: JsonPropertyName("reverted")]         bool    Reverted,
+    [property: JsonPropertyName("transactionName")]  string? TransactionName
+);
+
+// ─── Métodos: run_tool, list_tools ───────────────────────────────────────────
+// TODO Fase 3D: adicionar params/result de run_tool, list_tools.
 
 // ─── Dados de eventos (§ 4) ──────────────────────────────────────────────────
 

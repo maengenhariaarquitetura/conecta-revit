@@ -12,6 +12,8 @@ import {
   HandshakeResult,
   ExecuteCodeParams,
   ExecuteCodeResult,
+  GetContextResult,
+  RevertLastResult,
 } from "./shared/protocol";
 import { log } from "./log";
 
@@ -106,7 +108,15 @@ export class RevitClient extends EventEmitter {
     });
   }
 
-  // TODO Fase 3: getContext(), runTool(), listTools(), revertLast()
+  async getContext(): Promise<GetContextResult> {
+    return this._request<GetContextResult>("get_context", {});
+  }
+
+  async revertLast(): Promise<RevertLastResult> {
+    return this._request<RevertLastResult>("revert_last", {});
+  }
+
+  // TODO Fase 3D: runTool(), listTools()
 
   // ─── Handshake ────────────────────────────────────────────────────────────
 
