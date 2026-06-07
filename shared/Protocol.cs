@@ -1,24 +1,32 @@
-// Tipos de envelope do protocolo WebSocket (PROTOCOL.md § 2).
-// Deve espelhar exatamente shared/protocol.ts.
-// Payloads específicos de cada método (handshake, execute_code, etc.): TODO Fase 2.
+// Tipos de envelope e de métodos do protocolo WebSocket (PROTOCOL.md §§ 2–3).
+// Espelha exatamente shared/protocol.ts — mesmos campos, mesmos nomes, mesma ordem.
 
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace ConectaRevit.Shared;
 
-// § 2.1 — Request (ponte → add-in)
+// ─── Envelopes (§ 2) ─────────────────────────────────────────────────────────
+
+/// <summary>Mensagem ponte → add-in. id = UUID v4 gerado pela ponte.</summary>
 public record Request(
     [property: JsonPropertyName("id")]     string Id,
     [property: JsonPropertyName("method")] string Method,
-    [property: JsonPropertyName("params")] object? Params
+    [property: JsonPropertyName("params")] JsonElement? Params
 );
 
-// § 2.2 — Response (add-in → ponte, correlacionada por id)
-public record Response<T>(
+/// <summary>Resposta de sucesso add-in → ponte, correlacionada pelo id.</summary>
+public record SuccessResponse<T>(
     [property: JsonPropertyName("id")]     string Id,
     [property: JsonPropertyName("ok")]     bool Ok,
-    [property: JsonPropertyName("result")] T? Result,
-    [property: JsonPropertyName("error")]  ErrorInfo? Error
+    [property: JsonPropertyName("result")] T Result
+);
+
+/// <summary>Resposta de erro add-in → ponte.</summary>
+public record ErrorResponse(
+    [property: JsonPropertyName("id")]    string Id,
+    [property: JsonPropertyName("ok")]    bool Ok,
+    [property: JsonPropertyName("error")] ErrorInfo Error
 );
 
 public record ErrorInfo(
@@ -27,8 +35,57 @@ public record ErrorInfo(
     [property: JsonPropertyName("details")] string? Details
 );
 
-// § 2.3 — Event (add-in → ponte, sem id, sem resposta)
-public record Event(
-    [property: JsonPropertyName("event")] string EventType,
-    [property: JsonPropertyName("data")]  object? Data
+/// <summary>Evento add-in → ponte. Sem id, sem resposta esperada.</summary>
+public record WsEvent<T>(
+    [property: JsonPropertyName("event")] string EventName,
+    [property: JsonPropertyName("data")]  T Data
 );
+
+// ─── Método: handshake (§ 3.1) ───────────────────────────────────────────────
+
+public record HandshakeParams(
+    [property: JsonPropertyName("protocolVersion")] string ProtocolVersion,
+    [property: JsonPropertyName("bridgeVersion")]   string BridgeVersion
+);
+
+public record HandshakeResult(
+    [property: JsonPropertyName("protocolVersion")] string ProtocolVersion,
+    [property: JsonPropertyName("addinVersion")]    string AddinVersion,
+    [property: JsonPropertyName("revitVersion")]    string RevitVersion,
+    [property: JsonPropertyName("documentTitle")]   string? DocumentTitle,
+    [property: JsonPropertyName("mode")]            string Mode
+);
+
+// ─── Método: ping (§ 3.2) ────────────────────────────────────────────────────
+
+public record PingResult(
+    [property: JsonPropertyName("pong")] bool Pong,
+    [property: JsonPropertyName("ts")]   long Ts
+);
+
+// ─── Método: execute_code (§ 3.4) ────────────────────────────────────────────
+
+public record ExecuteCodeParams(
+    [property: JsonPropertyName("code")] string Code,
+    [property: JsonPropertyName("mode")] string? Mode
+);
+
+public record ExecuteCodeResult(
+    [property: JsonPropertyName("returnValue")]     object? ReturnValue,
+    [property: JsonPropertyName("log")]             List<string> Log,
+    [property: JsonPropertyName("transactionName")] string? TransactionName,
+    [property: JsonPropertyName("elementsCreated")] List<long> ElementsCreated
+);
+
+// ─── Métodos: get_context, run_tool, list_tools, revert_last ─────────────────
+// TODO Fase 3: adicionar params/result de get_context, run_tool, list_tools, revert_last.
+
+// ─── Dados de eventos (§ 4) ──────────────────────────────────────────────────
+
+public record StatusEventData(
+    [property: JsonPropertyName("connected")]     bool Connected,
+    [property: JsonPropertyName("documentTitle")] string? DocumentTitle,
+    [property: JsonPropertyName("mode")]          string Mode
+);
+
+// TODO Fase 3: adicionar LogEventData, DocumentChangedEventData.

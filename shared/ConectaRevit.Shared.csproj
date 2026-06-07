@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <AssemblyName>ConectaRevit.Shared</AssemblyName>
+    <RootNamespace>ConectaRevit.Shared</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- Sem referências a RevitAPI. Apenas BCL (.NET 8 inclui System.Text.Json). -->
+
+</Project>

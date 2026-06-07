@@ -11,6 +11,7 @@
       Sobrescreva via: dotnet build /p:RevitApiDir="C:\...\Revit 2025"
     -->
     <RevitApiDir Condition="'$(RevitApiDir)' == ''">C:\Program Files\Autodesk\Revit 2026</RevitApiDir>
+    <OutputType>Library</OutputType>
   </PropertyGroup>
 
   <ItemGroup>
@@ -32,6 +33,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ConectaRevit.Core\ConectaRevit.Core.csproj" />
+    <ProjectReference Include="..\..\..\shared\ConectaRevit.Shared.csproj" />
   </ItemGroup>
 
 </Project>

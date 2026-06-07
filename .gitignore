@@ -17,5 +17,8 @@ dist/
 installer/Output/
 dist/
 
+# Arquivo gerado pelo prebuild da ponte — não versionar (fonte: shared/protocol.ts)
+src/bridge/src/shared/
+
 # Logs
 *.log
