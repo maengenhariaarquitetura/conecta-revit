@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using Autodesk.Revit.UI;
 using ConectaRevit.Addin.Execution;
+using ConectaRevit.Addin.Licensing;
 using ConectaRevit.Addin.Logging;
 using ConectaRevit.Addin.Ribbon;
 using ConectaRevit.Addin.Server;
@@ -35,10 +36,11 @@ public class Application : IExternalApplication
         set => _uiApplication = value;
     }
 
-    internal static ExecutionEngine? Engine         { get; private set; }
-    internal static ExternalEvent?  ExecutionEvent  { get; private set; }
-    internal static WebSocketServer? Server   { get; private set; }
-    internal static SettingsManager? Settings { get; private set; }
+    internal static ExecutionEngine?  Engine         { get; private set; }
+    internal static ExternalEvent?   ExecutionEvent  { get; private set; }
+    internal static WebSocketServer?  Server         { get; private set; }
+    internal static SettingsManager?  Settings       { get; private set; }
+    internal static LicenseManager?   License        { get; private set; }
 
     // ─── Ciclo de vida ───────────────────────────────────────────────────────
 
@@ -54,6 +56,9 @@ public class Application : IExternalApplication
             var settings = new SettingsManager();
             settings.Load();
             Settings = settings;
+
+            // 2b. Licenciamento — instância criada aqui; validação ocorre no ConnectCommand.
+            License = new LicenseManager();
 
             // 3. Motor de execução + ExternalEvent.
             //

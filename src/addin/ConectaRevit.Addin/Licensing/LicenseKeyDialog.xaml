@@ -1,0 +1,86 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ConectaRevit.Addin.Licensing.LicenseKeyDialog"
+        x:ClassModifier="internal"
+        Title="ConectaRevit — Licença"
+        Width="480" SizeToContent="Height"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False">
+
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Padding"    Value="12,4"/>
+            <Setter Property="MinWidth"   Value="80"/>
+            <Setter Property="Height"     Value="26"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>  <!-- título status -->
+            <RowDefinition Height="Auto"/>  <!-- valor status -->
+            <RowDefinition Height="8"/>     <!-- espaço -->
+            <RowDefinition Height="Auto"/>  <!-- info machine id -->
+            <RowDefinition Height="12"/>    <!-- espaço -->
+            <RowDefinition Height="Auto"/>  <!-- label chave -->
+            <RowDefinition Height="Auto"/>  <!-- TextBox -->
+            <RowDefinition Height="4"/>
+            <RowDefinition Height="Auto"/>  <!-- hint -->
+            <RowDefinition Height="16"/>    <!-- espaço -->
+            <RowDefinition Height="Auto"/>  <!-- botões -->
+        </Grid.RowDefinitions>
+
+        <!-- Status atual -->
+        <TextBlock Grid.Row="0"
+                   Text="Status da licença:"
+                   FontWeight="SemiBold" FontSize="12"/>
+        <TextBlock Grid.Row="1"
+                   x:Name="TxtStatus"
+                   Margin="0,3,0,0"
+                   TextWrapping="Wrap"
+                   FontSize="12"/>
+
+        <!-- Machine ID (para suporte) -->
+        <TextBlock Grid.Row="3"
+                   x:Name="TxtMachineId"
+                   FontSize="10"
+                   Foreground="#666"
+                   TextWrapping="Wrap"/>
+
+        <!-- Separador -->
+        <Separator Grid.Row="4" Margin="0,6"/>
+
+        <!-- Campo de chave -->
+        <TextBlock Grid.Row="5"
+                   Text="Chave de licença:"
+                   FontWeight="SemiBold" FontSize="12"/>
+        <TextBox Grid.Row="6"
+                 x:Name="TxtKey"
+                 Margin="0,5,0,0"
+                 Height="24"
+                 FontFamily="Consolas"
+                 FontSize="12"
+                 CharacterCasing="Upper"
+                 MaxLength="64"
+                 VerticalContentAlignment="Center"
+                 Padding="4,0"/>
+        <TextBlock Grid.Row="8"
+                   Text="Cole ou digite a chave recebida por e-mail (ex.: MA-XXXX-YYYY)."
+                   FontSize="10" Foreground="#666"/>
+
+        <!-- Botões -->
+        <StackPanel Grid.Row="10"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button x:Name="BtnSave"
+                    Content="Salvar e Validar"
+                    IsDefault="True"
+                    Margin="0,0,8,0"
+                    Click="BtnSave_Click"/>
+            <Button Content="Cancelar"
+                    IsCancel="True"
+                    Click="BtnCancel_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

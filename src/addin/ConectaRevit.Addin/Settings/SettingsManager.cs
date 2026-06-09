@@ -50,6 +50,13 @@ internal sealed class SettingsManager
         _data = _data with { Mode = mode };
         Save();
     }
+
+    // Persiste a chave de licença. Chamado pelo LicenseKeyDialog.
+    internal void SetLicenseKey(string key)
+    {
+        _data = _data with { LicenseKey = key };
+        Save();
+    }
 }
 
 // Dados persistidos — campos conforme ARCHITECTURE § 5.8.

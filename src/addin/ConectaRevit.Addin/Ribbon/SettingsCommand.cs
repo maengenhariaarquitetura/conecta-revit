@@ -1,6 +1,7 @@
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using ConectaRevit.Addin.Licensing;
 using ConectaRevit.Addin.Logging;
 
 namespace ConectaRevit.Addin.Ribbon;
@@ -16,7 +17,8 @@ internal sealed class SettingsCommand : IExternalCommand
     public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
     {
         var settings = Application.Settings;
-        if (settings == null)
+        var license  = Application.License;
+        if (settings == null || license == null)
         {
             TaskDialog.Show("ConectaRevit", "Configurações não disponíveis. Reinicie o Revit.");
             return Result.Failed;
@@ -24,6 +26,7 @@ internal sealed class SettingsCommand : IExternalCommand
 
         var currentMode  = settings.Mode;                                   // "safe" | "direct"
         var currentLabel = ModeLabel(currentMode);
+        var licenseStatus = BuildLicenseStatusLine(license);
 
         // ── Diálogo principal ──────────────────────────────────────────────────
         var dlg = new TaskDialog("ConectaRevit — Configurações");
@@ -35,7 +38,8 @@ internal sealed class SettingsCommand : IExternalCommand
             "O código não deve abrir transação própria.\n\n" +
             "• Direto (avançado): o código gerencia as próprias transações " +
             "(using var tx = new Transaction(...)). " +
-            "Use apenas se souber o que está fazendo.";
+            "Use apenas se souber o que está fazendo.\n\n" +
+            $"Licença: {licenseStatus}";
 
         dlg.AddCommandLink(
             TaskDialogCommandLinkId.CommandLink1,
@@ -45,6 +49,10 @@ internal sealed class SettingsCommand : IExternalCommand
             TaskDialogCommandLinkId.CommandLink2,
             "Modo Direto  (avançado)",
             "Script gerencia as próprias transações; harness suprime apenas diálogos modais.");
+        dlg.AddCommandLink(
+            TaskDialogCommandLinkId.CommandLink3,
+            "Gerenciar Licença…",
+            $"Inserir/alterar chave de licença. {licenseStatus}");
 
         dlg.CommonButtons = TaskDialogCommonButtons.Cancel;
         dlg.DefaultButton = currentMode == "direct"
@@ -52,6 +60,15 @@ internal sealed class SettingsCommand : IExternalCommand
             : TaskDialogResult.CommandLink1;
 
         var picked = dlg.Show();
+
+        // ── CommandLink3: abrir diálogo de licença ────────────────────────────
+        if (picked == TaskDialogResult.CommandLink3)
+        {
+            var ownerHandle = commandData.Application.MainWindowHandle;
+            var dialog = new LicenseKeyDialog(license, settings, ownerHandle);
+            dialog.ShowDialog();
+            return Result.Succeeded;
+        }
 
         string? newMode = picked switch
         {
@@ -101,4 +118,20 @@ internal sealed class SettingsCommand : IExternalCommand
 
     private static string ModeLabel(string mode) =>
         mode == "direct" ? "Direto (avançado)" : "Seguro (recomendado)";
+
+    private static string BuildLicenseStatusLine(Licensing.LicenseManager license)
+    {
+        var exp = license.ExpiresAt.HasValue
+            ? $" — válida até {license.ExpiresAt.Value.ToLocalTime():dd/MM/yyyy}"
+            : "";
+        return license.Status switch
+        {
+            Licensing.LicenseStatus.Valid        => $"Válida{exp}",
+            Licensing.LicenseStatus.GraceOffline => $"Grace offline{exp}",
+            Licensing.LicenseStatus.Expired      => $"Expirada{exp}",
+            Licensing.LicenseStatus.Invalid      => "Inválida",
+            Licensing.LicenseStatus.NoKey        => "Não configurada",
+            _                                    => "Não verificada",
+        };
+    }
 }

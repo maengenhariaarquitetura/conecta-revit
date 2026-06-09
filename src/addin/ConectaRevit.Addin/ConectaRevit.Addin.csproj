@@ -12,6 +12,7 @@
     -->
     <RevitApiDir Condition="'$(RevitApiDir)' == ''">C:\Program Files\Autodesk\Revit 2026</RevitApiDir>
     <OutputType>Library</OutputType>
+    <UseWPF>true</UseWPF>
     <!--
       Para OutputType=Library o .NET SDK defaulta CopyLocalLockFileAssemblies=false,
       o que faz os NuGet packages (Roslyn e dependências transitivas) NÃO serem copiados
@@ -22,6 +23,16 @@
     -->
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
+
+  <!--
+    O SDK WPF em Release pode gerar GlobalUsings.g.cs sem System.IO / System.Net.Http.
+    Os <Using> abaixo garantem que esses namespaces estejam disponíveis em todas as
+    configurações sem precisar adicionar `using` explícito em cada arquivo .cs.
+  -->
+  <ItemGroup>
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- CopyLocal=false: as DLLs já existem no diretório do Revit — não embalar junto. -->
