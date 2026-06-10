@@ -1,0 +1,9 @@
+# Pasta reservada para os ícones do ribbon (8 PNGs).
+# Nomes esperados (16×16 e 32×32 para cada botão):
+#   conectar_16.png   conectar_32.png
+#   status_16.png     status_32.png
+#   requisitos_16.png requisitos_32.png
+#   config_16.png     config_32.png
+#
+# Após dropar os PNGs, descomente as linhas LargeImage/Image em
+# src/addin/ConectaRevit.Addin/Ribbon/ConectaRibbon.cs

@@ -38,6 +38,8 @@ internal sealed class WebSocketServer
     private int _port;
 
     public bool IsRunning { get; private set; }
+    /// <summary>Porta em uso pelo servidor (0 se não estiver rodando).</summary>
+    public int  Port      => _port;
 
     // ─── Serialização JSON ───────────────────────────────────────────────────
 

@@ -1,0 +1,44 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ConectaRevit.Addin.Ribbon.CheckRequirementsDialog"
+        x:ClassModifier="internal"
+        Title="ConectaRevit — Verificação de Requisitos"
+        Width="520" Height="440"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False">
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>   <!-- cabeçalho -->
+            <RowDefinition Height="10"/>     <!-- espaço -->
+            <RowDefinition Height="*"/>      <!-- lista rolável -->
+            <RowDefinition Height="12"/>     <!-- espaço -->
+            <RowDefinition Height="Auto"/>   <!-- botão Fechar -->
+        </Grid.RowDefinitions>
+
+        <!-- Cabeçalho -->
+        <TextBlock Grid.Row="0"
+                   Text="Pré-requisitos para o ConectaRevit funcionar corretamente:"
+                   FontWeight="SemiBold"
+                   FontSize="12"
+                   TextWrapping="Wrap"/>
+
+        <!-- Lista de requisitos (populada em código) -->
+        <ScrollViewer Grid.Row="2"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <StackPanel x:Name="RequirementsPanel"/>
+        </ScrollViewer>
+
+        <!-- Botão Fechar -->
+        <Button Grid.Row="4"
+                Content="Fechar"
+                Width="80"
+                Height="26"
+                Padding="12,4"
+                HorizontalAlignment="Right"
+                IsCancel="True"
+                Click="BtnClose_Click"/>
+    </Grid>
+</Window>

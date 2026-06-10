@@ -102,4 +102,24 @@
     <ProjectReference Include="..\..\..\shared\ConectaRevit.Shared.csproj" />
   </ItemGroup>
 
+  <!--
+    Ícones do ribbon — embutidos como WPF Resource (pack URI).
+
+    POR QUE <Resource> e NÃO <EmbeddedResource>:
+      Em projetos com <UseWPF>true</UseWPF>, o target AssignWinFXEmbeddedResource
+      intercepta qualquer <EmbeddedResource> de imagem e a reempacota dentro do
+      bundle g.resources — onde GetManifestResourceStream() NÃO a encontra.
+      Com <Resource>, o WPF empacota o PNG em g.resources de forma acessível
+      via pack URI: pack://application:,,,/ConectaRevit.Addin;component/Resources/Icons/<arquivo>.png
+      LoadIcon() em ConectaRibbon.cs usa exatamente esse URI.
+
+    PARA ADICIONAR OS ÍCONES:
+      Basta salvar os 8 PNGs em:
+        src/addin/ConectaRevit.Addin/Resources/Icons/
+      O glob *.png os inclui automaticamente — nenhuma edição do .csproj é necessária.
+  -->
+  <ItemGroup>
+    <Resource Include="Resources\Icons\*.png" />
+  </ItemGroup>
+
 </Project>
